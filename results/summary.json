@@ -1,0 +1,386 @@
+{
+  "generated_at": "2026-10-08T07:09:45Z",
+  "elapsed_sec": 6.5,
+  "range": {
+    "since": null,
+    "until": null
+  },
+  "data_coverage": {
+    "n_insts": 485,
+    "n_insts_tested": 484,
+    "first_ts": "2026-08-13T00:45Z",
+    "last_ts": "2026-10-08T07:00Z",
+    "median_oldest_ts": "2026-10-07T06:05Z",
+    "backfill_done": 0,
+    "delisted_included": 0
+  },
+  "config": {
+    "detector": {
+      "vol_ma_bars": 20,
+      "pump": {
+        "ret_24h_min": 0.5,
+        "ret_6h_min": 0.3,
+        "vol_ratio_min": 4.0,
+        "vol_lookback_bars": 72,
+        "measure": "close_to_close",
+        "allow_new_listing": true,
+        "new_listing_min_bars": 72
+      },
+      "red_candle": {
+        "ret_max": -0.08,
+        "vol_ratio_min": 4.0,
+        "ret_basis": "prev_close"
+      },
+      "cooldown_bars": 288
+    },
+    "metrics": {
+      "entry": "next_open",
+      "horizons": {
+        "30m": 6,
+        "1h": 12,
+        "6h": 72,
+        "24h": 288,
+        "3d": 864
+      },
+      "excursion_bars": 288,
+      "big_drop_threshold": -0.2,
+      "fee_per_side": 0.0005,
+      "slippage_per_side": 0.0005
+    },
+    "btc_regime": {
+      "ret_4h_weak": -0.01,
+      "ret_4h_strong": 0.01,
+      "ema_bars": 288
+    },
+    "baseline": {
+      "random_samples": 5000,
+      "seed": 42
+    },
+    "bootstrap": {
+      "iterations": 2000,
+      "seed": 42
+    }
+  },
+  "modes": {
+    "red_only": {
+      "n_events": 0
+    },
+    "pump_red": {
+      "n_events": 0
+    },
+    "pump_red_btcweak": {
+      "n_events": 0
+    }
+  },
+  "baselines": {
+    "random_any": {
+      "n_events": 5000,
+      "n_insts": 34,
+      "n_days": 51,
+      "horizons": {
+        "30m": {
+          "n": 5000,
+          "n_insts": 34,
+          "n_days": 51,
+          "mean": 8e-05,
+          "median": 0.0,
+          "std": 0.006232,
+          "bear_rate": 0.4718,
+          "short_pnl_net_mean": -0.00208,
+          "mean_ci95": [
+            -9.1e-05,
+            0.000258
+          ]
+        },
+        "1h": {
+          "n": 5000,
+          "n_insts": 34,
+          "n_days": 51,
+          "mean": 0.000122,
+          "median": 3e-05,
+          "std": 0.008928,
+          "bear_rate": 0.4804,
+          "short_pnl_net_mean": -0.002122,
+          "mean_ci95": [
+            -0.000126,
+            0.00037
+          ]
+        },
+        "6h": {
+          "n": 5000,
+          "n_insts": 34,
+          "n_days": 51,
+          "mean": -0.000362,
+          "median": 0.0,
+          "std": 0.021236,
+          "bear_rate": 0.4986,
+          "short_pnl_net_mean": -0.001638,
+          "mean_ci95": [
+            -0.000986,
+            0.000235
+          ]
+        },
+        "24h": {
+          "n": 5000,
+          "n_insts": 34,
+          "n_days": 51,
+          "mean": -0.001097,
+          "median": -0.000165,
+          "std": 0.041135,
+          "bear_rate": 0.502,
+          "short_pnl_net_mean": -0.000903,
+          "mean_ci95": [
+            -0.002256,
+            1.5e-05
+          ]
+        },
+        "3d": {
+          "n": 3728,
+          "n_insts": 34,
+          "n_days": 49,
+          "mean": 0.007192,
+          "median": 0.004652,
+          "std": 0.070377,
+          "bear_rate": 0.434549,
+          "short_pnl_net_mean": -0.009192,
+          "mean_ci95": [
+            0.004828,
+            0.009574
+          ]
+        }
+      },
+      "big_drop_rate_24h": 0.0022,
+      "new_high_rate_24h": 0.4758,
+      "mae_mean": 0.030079,
+      "mae_median": 0.018522,
+      "mae_p90": 0.066438,
+      "mfe_mean": -0.028256,
+      "mfe_median": -0.019465,
+      "mae_before_mfe_rate": 0.5164,
+      "by_btc_regime": {
+        "strong": {
+          "n_events": 323,
+          "n_insts": 34,
+          "n_days": 24,
+          "horizons": {
+            "30m": {
+              "n": 323,
+              "n_insts": 34,
+              "n_days": 24,
+              "mean": -0.000822,
+              "median": -0.000331,
+              "std": 0.006052,
+              "bear_rate": 0.535604,
+              "short_pnl_net_mean": -0.001178
+            },
+            "1h": {
+              "n": 323,
+              "n_insts": 34,
+              "n_days": 24,
+              "mean": -0.000814,
+              "median": -0.000194,
+              "std": 0.008624,
+              "bear_rate": 0.50774,
+              "short_pnl_net_mean": -0.001186
+            },
+            "6h": {
+              "n": 323,
+              "n_insts": 34,
+              "n_days": 24,
+              "mean": -0.001978,
+              "median": -0.000866,
+              "std": 0.019967,
+              "bear_rate": 0.526316,
+              "short_pnl_net_mean": -2.2e-05
+            },
+            "24h": {
+              "n": 323,
+              "n_insts": 34,
+              "n_days": 24,
+              "mean": -0.000353,
+              "median": -0.002589,
+              "std": 0.051421,
+              "bear_rate": 0.551084,
+              "short_pnl_net_mean": -0.001647
+            },
+            "3d": {
+              "n": 302,
+              "n_insts": 34,
+              "n_days": 23,
+              "mean": 0.000226,
+              "median": 0.001256,
+              "std": 0.080575,
+              "bear_rate": 0.493377,
+              "short_pnl_net_mean": -0.002226
+            }
+          },
+          "big_drop_rate_24h": 0.006192,
+          "new_high_rate_24h": 0.653251,
+          "mae_mean": 0.035593,
+          "mae_median": 0.026408,
+          "mae_p90": 0.069481,
+          "mfe_mean": -0.033592,
+          "mfe_median": -0.025975,
+          "mae_before_mfe_rate": 0.479876
+        },
+        "neutral": {
+          "n_events": 4293,
+          "n_insts": 34,
+          "n_days": 51,
+          "horizons": {
+            "30m": {
+              "n": 4293,
+              "n_insts": 34,
+              "n_days": 51,
+              "mean": 0.000274,
+              "median": 0.0,
+              "std": 0.006004,
+              "bear_rate": 0.464011,
+              "short_pnl_net_mean": -0.002274
+            },
+            "1h": {
+              "n": 4293,
+              "n_insts": 34,
+              "n_days": 51,
+              "mean": 0.00039,
+              "median": 8.4e-05,
+              "std": 0.008688,
+              "bear_rate": 0.473096,
+              "short_pnl_net_mean": -0.00239
+            },
+            "6h": {
+              "n": 4293,
+              "n_insts": 34,
+              "n_days": 51,
+              "mean": -4.1e-05,
+              "median": 9.5e-05,
+              "std": 0.021542,
+              "bear_rate": 0.493594,
+              "short_pnl_net_mean": -0.001959
+            },
+            "24h": {
+              "n": 4293,
+              "n_insts": 34,
+              "n_days": 51,
+              "mean": -0.000942,
+              "median": 0.000234,
+              "std": 0.040733,
+              "bear_rate": 0.490799,
+              "short_pnl_net_mean": -0.001058
+            },
+            "3d": {
+              "n": 3187,
+              "n_insts": 34,
+              "n_days": 49,
+              "mean": 0.007121,
+              "median": 0.004643,
+              "std": 0.069845,
+              "bear_rate": 0.435206,
+              "short_pnl_net_mean": -0.009121
+            }
+          },
+          "big_drop_rate_24h": 0.002096,
+          "new_high_rate_24h": 0.488935,
+          "mae_mean": 0.030371,
+          "mae_median": 0.018804,
+          "mae_p90": 0.067112,
+          "mfe_mean": -0.027881,
+          "mfe_median": -0.018941,
+          "mae_before_mfe_rate": 0.515257
+        },
+        "weak": {
+          "n_events": 384,
+          "n_insts": 34,
+          "n_days": 22,
+          "horizons": {
+            "30m": {
+              "n": 384,
+              "n_insts": 34,
+              "n_days": 22,
+              "mean": -0.001329,
+              "median": -0.000123,
+              "std": 0.008312,
+              "bear_rate": 0.505208,
+              "short_pnl_net_mean": -0.000671
+            },
+            "1h": {
+              "n": 384,
+              "n_insts": 34,
+              "n_days": 22,
+              "mean": -0.002089,
+              "median": -0.000549,
+              "std": 0.011203,
+              "bear_rate": 0.539062,
+              "short_pnl_net_mean": 8.9e-05
+            },
+            "6h": {
+              "n": 384,
+              "n_insts": 34,
+              "n_days": 22,
+              "mean": -0.002596,
+              "median": -0.000699,
+              "std": 0.018498,
+              "bear_rate": 0.53125,
+              "short_pnl_net_mean": 0.000596
+            },
+            "24h": {
+              "n": 384,
+              "n_insts": 34,
+              "n_days": 22,
+              "mean": -0.003451,
+              "median": -0.004374,
+              "std": 0.03553,
+              "bear_rate": 0.585938,
+              "short_pnl_net_mean": 0.001451
+            },
+            "3d": {
+              "n": 239,
+              "n_insts": 34,
+              "n_days": 20,
+              "mean": 0.016944,
+              "median": 0.007419,
+              "std": 0.062371,
+              "bear_rate": 0.351464,
+              "short_pnl_net_mean": -0.018944
+            }
+          },
+          "big_drop_rate_24h": 0.0,
+          "new_high_rate_24h": 0.179688,
+          "mae_mean": 0.022178,
+          "mae_median": 0.012254,
+          "mae_p90": 0.046677,
+          "mfe_mean": -0.027956,
+          "mfe_median": -0.023652,
+          "mae_before_mfe_rate": 0.559896
+        }
+      },
+      "by_month": {
+        "2026-08": {
+          "n": 247,
+          "fwd_ret_24h_mean": 0.019695
+        },
+        "2026-09": {
+          "n": 923,
+          "fwd_ret_24h_mean": -0.001858
+        },
+        "2026-10": {
+          "n": 3830,
+          "fwd_ret_24h_mean": -0.002254
+        }
+      },
+      "population": 78587
+    },
+    "random_pump": {
+      "n_events": 0,
+      "population": 0
+    }
+  },
+  "caveats": [
+    "survivorship bias: instruments delisted before the system started are missing (OKX REST returns 51001)",
+    "funding rate not included in short PnL",
+    "volume is OKX-only",
+    "events are not independent (market-wide crashes trigger many at once); see n_days and by_month",
+    "slippage is a flat estimate; illiquid coins may fill much worse than open[t+1]",
+    "parameter sweep: picking the best of many combinations is optimistic (multiple comparisons)"
+  ]
+}

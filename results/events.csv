@@ -1,0 +1,1 @@
+mode,inst_id,event_ts,event_time_utc,is_new_listing,ret_1h_pre,ret_6h_pre,ret_24h_pre,pump_vol_ratio_max,red_ret_prev_close,red_ret_body,red_vol_ratio,btc_ret_1h,btc_ret_4h,btc_below_ema,btc_regime,entry_price,fwd_ret_30m,fwd_ret_1h,fwd_ret_6h,fwd_ret_24h,fwd_ret_3d,mae_24h,mfe_24h,mae_before_mfe,bars_to_mfe,new_high_24h,short_pnl_net_24h,incomplete
