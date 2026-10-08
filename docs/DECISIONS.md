@@ -31,3 +31,6 @@
 | D25 | 開發方式 | 規劃機只寫文件並上傳；實作在另一端進行 | 使用者要求 | 在規劃機寫程式但不測試 |
 | D26 | 時間 | 全部 UTC，資料庫存毫秒整數 | 與 OKX API 一致，避免時區錯誤 | 本地時間 |
 | D27 | 套件管理 | uv：`pyproject.toml` + `uv.lock`，Python 3.12 由 uv 安裝；排程仍直接呼叫 `.venv\Scripts\pythonw.exe` | 主機已有 uv 與 3.12；lock 檔保證重建一致；`uv sync` 一步完成部署 | `requirements.txt` + pip（無 lock）、只用 uv 建 venv |
+| D28 | 網頁監控台 | FastAPI + uvicorn，單頁 HTML/JS，lightweight-charts（vendor 進 repo），只綁 127.0.0.1，手動啟動 | 不需 node 建置；互動 K 線；本機即可，不必處理登入 | Streamlit（控制與自動刷新不順）、純標準庫（繁瑣）、常駐服務 |
+| D29 | 網頁的暫停控制 | `data/PAUSE` 旗標檔，sync 啟動時看到就結束；POST 需自訂 header 並檢查 Origin/Host | 排程以系統管理員註冊，一般權限網頁無法停用；旗標不需權限且 CLI 也能操作；header 防其他網站跨站呼叫本機 API | `Disable-ScheduledTask`（需提權） |
+| D30 | 網頁讀資料庫 | 每個請求唯讀開啟、查完立即關閉 | DuckDB 讀寫互斥，不可長時間占用而擋住 sync | 常駐連線 |

@@ -295,10 +295,13 @@ class Syncer:
                 return
 
 
-def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool, no_backfill: bool) -> int:
+def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool, no_backfill: bool, force: bool = False) -> int:
     started = time.monotonic()
     started_ms = db.now_ms()
     deadline = started + budget_sec
+    if pause_flag(cfg).exists() and not force:
+        log.info("paused (%s exists); exiting", pause_flag(cfg))
+        return 0
     lock = FileLock(str(cfg.paths.lock), timeout=0)
     cfg.paths.lock.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -364,81 +367,142 @@ def gap_summary(con: Any) -> pd.DataFrame:
     ).df()
 
 
-def print_status(cfg: Config, top: int = 10) -> int:
+def pause_flag(cfg: Config):
+    return cfg.paths.db.parent / "PAUSE"
+
+
+def _iv(v: Any) -> int | None:
+    return None if v is None or pd.isna(v) else int(v)
+
+
+def collect_status(cfg: Config, with_gaps: bool = False, top: int = 10) -> dict[str, Any]:
     p = cfg.paths.db
+    now = db.now_ms()
+    out: dict[str, Any] = {
+        "db_path": str(p),
+        "exists": p.exists(),
+        "now": now,
+        "paused": pause_flag(cfg).exists(),
+    }
     if not p.exists():
-        print(f"DB: {p} (not created yet)")
-        return 0
-    size_mb = p.stat().st_size / 1024 / 1024
+        return out
+    out["db_size_mb"] = round(p.stat().st_size / 1024 / 1024, 1)
     with db.open_db(p, read_only=True) as con:
         ov = db.sync_overview(con)
-        n_rows = con.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
-        last = con.execute("SELECT * FROM sync_runs ORDER BY started_at DESC LIMIT 1").fetchone()
-        runs24 = con.execute(
-            "SELECT COUNT(*), SUM(requests), SUM(rows_written), SUM(errors) FROM sync_runs WHERE started_at >= ?",
-            [db.now_ms() - DAY_MS],
+        out["candles"] = int(con.execute("SELECT COUNT(*) FROM candles").fetchone()[0])
+        last = con.execute(
+            "SELECT started_at, duration_sec, requests, rows_written, forward_insts, backfill_pages, errors, note "
+            "FROM sync_runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
-        gaps = gap_summary(con)
-    now = db.now_ms()
-    print(f"DB: {p}  ({size_mb:,.1f} MB)")
-    n_live = int((ov["state"] == "live").sum())
-    n_del = int((ov["state"] == "delisted").sum())
-    print(f"Instruments: {n_live} live, {n_del} delisted")
-    print(f"Candles: {n_rows:,} rows")
+        r24 = con.execute(
+            "SELECT COUNT(*), SUM(requests), SUM(rows_written), SUM(errors) FROM sync_runs WHERE started_at >= ?",
+            [now - DAY_MS],
+        ).fetchone()
+        counts = dict(con.execute("SELECT inst_id, COUNT(*) FROM candles GROUP BY inst_id").fetchall())
+        gaps = gap_summary(con) if with_gaps else None
+
+    out["n_live"] = int((ov["state"] == "live").sum())
+    out["n_delisted"] = int((ov["state"] == "delisted").sum())
+    out["n_no_data"] = int(ov["newest_ts"].isna().sum())
 
     states = [
-        InstState(r.inst_id, r.state, None if pd.isna(r.list_time) else int(r.list_time),
-                  None if pd.isna(r.oldest_ts) else int(r.oldest_ts),
-                  None if pd.isna(r.newest_ts) else int(r.newest_ts), bool(r.backfill_done))
+        InstState(r.inst_id, r.state, _iv(r.list_time), _iv(r.oldest_ts), _iv(r.newest_ts), bool(r.backfill_done))
         for r in ov.itertuples(index=False)
     ]
     targets = layer_targets(cfg, now)
-    layer_line = f"Backfill: all {len(targets)} layers complete"
+    layers = []
+    current = None
     for li, t in enumerate(targets, 1):
         done = sum(is_done_for(s, t) for s in states)
-        if done < len(states):
-            layer_line = f"Backfill: layer {li}/{len(targets)} (to {ms_to_str(t, '%Y-%m-%d')}), {done}/{len(states)} done"
-            break
-    print(layer_line)
+        layers.append({"layer": li, "target": t, "done": done, "total": len(states)})
+        if current is None and done < len(states):
+            current = li
+    out["layers"] = layers
+    out["current_layer"] = current
 
     live = ov[(ov["state"] == "live") & ov["newest_ts"].notna()]
     if not live.empty:
         lag = (now - (live["newest_ts"].astype("int64") + BAR_MS)) / 60000
         btc = live[live["inst_id"] == cfg.universe["btc_inst"]]
-        btc_lag = f"{float((now - (int(btc['newest_ts'].iloc[0]) + BAR_MS)) / 60000):.0f} min" if not btc.empty else "-"
-        print(f"Latest bar lag: max {lag.max():.0f} min, median {lag.median():.0f} min ({cfg.universe['btc_inst']} {btc_lag})")
-    no_data = int(ov["newest_ts"].isna().sum())
-    if no_data:
-        print(f"Instruments without data yet: {no_data}")
+        out["lag_min"] = {
+            "max": float(lag.max()),
+            "median": float(lag.median()),
+            "btc": float((now - (int(btc["newest_ts"].iloc[0]) + BAR_MS)) / 60000) if not btc.empty else None,
+        }
     if last is not None:
-        print(f"Last run: {ms_to_str(last[0])} UTC, {last[1]:.0f} s, {last[2]:,} requests, {last[3]:,} rows, {last[6]} errors ({last[7]})")
-    if runs24 and runs24[0]:
-        print(f"Last 24h: {runs24[0]} runs, {int(runs24[1] or 0):,} requests, {int(runs24[2] or 0):,} rows, {int(runs24[3] or 0)} errors")
+        out["last_run"] = dict(zip(
+            ["started_at", "duration_sec", "requests", "rows_written", "forward_insts", "backfill_pages", "errors", "note"], last
+        ))
+    out["last_24h"] = {
+        "runs": int(r24[0] or 0), "requests": int(r24[1] or 0), "rows": int(r24[2] or 0), "errors": int(r24[3] or 0),
+    }
     errs = ov[ov["last_error"].notna()]
-    if not errs.empty:
-        print(f"Instruments with last_error: {len(errs)}")
-        for r in errs.head(5).itertuples(index=False):
-            print(f"  {r.inst_id}: {str(r.last_error)[:100]}")
+    out["errors"] = [{"inst_id": r.inst_id, "error": str(r.last_error)} for r in errs.itertuples(index=False)]
 
+    cov = ov[ov["oldest_ts"].notna()].sort_values("oldest_ts", ascending=False).head(top)
+    out["least_covered"] = [
+        {"inst_id": r.inst_id, "oldest_ts": _iv(r.oldest_ts), "newest_ts": _iv(r.newest_ts),
+         "bars": int(counts.get(r.inst_id, 0)), "done": bool(r.backfill_done)}
+        for r in cov.itertuples(index=False)
+    ]
+    if gaps is not None:
+        out["gaps"] = {
+            "n_gaps": int(gaps["gaps"].sum()) if len(gaps) else 0,
+            "n_insts": int(len(gaps)),
+            "missing_hours": float(gaps["missing_min"].sum()) / 60 if len(gaps) else 0.0,
+            "top": [{"inst_id": r.inst_id, "gaps": int(r.gaps), "missing_hours": float(r.missing_min) / 60}
+                    for r in gaps.head(20).itertuples(index=False)],
+        }
+    return out
+
+
+def print_status(cfg: Config, top: int = 10) -> int:
+    s = collect_status(cfg, with_gaps=True, top=top)
+    if not s["exists"]:
+        print(f"DB: {s['db_path']} (not created yet)")
+        return 0
+    print(f"DB: {s['db_path']}  ({s['db_size_mb']:,.1f} MB)")
+    if s["paused"]:
+        print("PAUSED: data/PAUSE exists; scheduled runs exit immediately")
+    print(f"Instruments: {s['n_live']} live, {s['n_delisted']} delisted")
+    print(f"Candles: {s['candles']:,} rows")
+    cur = s["current_layer"]
+    if cur is None:
+        print(f"Backfill: all {len(s['layers'])} layers complete")
+    else:
+        L = s["layers"][cur - 1]
+        print(f"Backfill: layer {cur}/{len(s['layers'])} (to {ms_to_str(L['target'], '%Y-%m-%d')}), {L['done']}/{L['total']} done")
+    if "lag_min" in s:
+        lg = s["lag_min"]
+        btc = f"{lg['btc']:.0f} min" if lg["btc"] is not None else "-"
+        print(f"Latest bar lag: max {lg['max']:.0f} min, median {lg['median']:.0f} min ({cfg.universe['btc_inst']} {btc})")
+    if s["n_no_data"]:
+        print(f"Instruments without data yet: {s['n_no_data']}")
+    if "last_run" in s:
+        r = s["last_run"]
+        print(f"Last run: {ms_to_str(r['started_at'])} UTC, {r['duration_sec']:.0f} s, {r['requests']:,} requests, "
+              f"{r['rows_written']:,} rows, {r['errors']} errors ({r['note']})")
+    d = s["last_24h"]
+    if d["runs"]:
+        print(f"Last 24h: {d['runs']} runs, {d['requests']:,} requests, {d['rows']:,} rows, {d['errors']} errors")
+    if s["errors"]:
+        print(f"Instruments with last_error: {len(s['errors'])}")
+        for e in s["errors"][:5]:
+            print(f"  {e['inst_id']}: {e['error'][:100]}")
     print()
     print(f"Oldest coverage (top {top} least covered):")
-    cov = ov[ov["oldest_ts"].notna()].copy()
-    if not cov.empty:
-        counts = {}
-        with db.open_db(p, read_only=True) as con:
-            counts = dict(con.execute("SELECT inst_id, COUNT(*) FROM candles GROUP BY inst_id").fetchall())
-        cov = cov.sort_values("oldest_ts", ascending=False).head(top)
+    if s["least_covered"]:
         print(f"{'inst_id':<22}{'oldest':<18}{'newest':<18}{'bars':>9}  done")
-        for r in cov.itertuples(index=False):
-            print(f"{r.inst_id:<22}{ms_to_str(r.oldest_ts):<18}{ms_to_str(r.newest_ts):<18}{counts.get(r.inst_id, 0):>9,}  {'yes' if r.backfill_done else 'no'}")
-
+        for r in s["least_covered"]:
+            print(f"{r['inst_id']:<22}{ms_to_str(r['oldest_ts']):<18}{ms_to_str(r['newest_ts']):<18}{r['bars']:>9,}  {'yes' if r['done'] else 'no'}")
     print()
-    if gaps.empty:
+    g = s["gaps"]
+    if not g["n_insts"]:
         print("Data gaps: none")
     else:
-        print(f"Data gaps: {int(gaps['gaps'].sum()):,} gaps in {len(gaps)} instruments, {float(gaps['missing_min'].sum()) / 60:,.1f} h missing in total")
-        for r in gaps.head(5).itertuples(index=False):
-            print(f"  {r.inst_id:<22}{int(r.gaps):>6} gaps {float(r.missing_min) / 60:>9.1f} h")
+        print(f"Data gaps: {g['n_gaps']:,} gaps in {g['n_insts']} instruments, {g['missing_hours']:,.1f} h missing in total")
+        for r in g["top"][:5]:
+            print(f"  {r['inst_id']:<22}{r['gaps']:>6} gaps {r['missing_hours']:>9.1f} h")
     return 0
 
 
@@ -451,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-backfill", action="store_true")
     ap.add_argument("--only", nargs="+", default=None)
     ap.add_argument("--verbose", "-v", action="store_true")
+    ap.add_argument("--force", action="store_true", help="run even if data/PAUSE exists")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -472,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_minutes is None:
             budget = 120
     log.info("sync start (budget %.0fs%s%s)", budget, ", smoke" if args.smoke else "", f", only {only}" if only else "")
-    return run_sync(cfg, budget, only=only, smoke=args.smoke, no_backfill=args.no_backfill)
+    return run_sync(cfg, budget, only=only, smoke=args.smoke, no_backfill=args.no_backfill, force=args.force)
 
 
 if __name__ == "__main__":

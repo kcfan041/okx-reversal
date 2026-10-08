@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>okx-reversal 監控台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>okx-reversal</h1>
+  <nav>
+    <button data-tab="dash" class="active">儀表板</button>
+    <button data-tab="ctrl">同步控制</button>
+    <button data-tab="bt">回測</button>
+    <button data-tab="ev">事件</button>
+    <button data-tab="kl">K 線</button>
+  </nav>
+  <div id="hdr-state"></div>
+</header>
+<div id="toast"></div>
+
+<main>
+<!-- 儀表板 -->
+<section id="tab-dash" class="tab active">
+  <div class="cards" id="dash-cards"></div>
+  <div class="grid2">
+    <div class="panel">
+      <h2>回補進度</h2>
+      <div id="dash-layers"></div>
+    </div>
+    <div class="panel">
+      <h2>排程</h2>
+      <div id="dash-task"></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>最近執行 <small>（每次寫入列數）</small></h2>
+    <div id="dash-runchart" class="runchart"></div>
+    <div class="scroll"><table id="dash-runs"></table></div>
+  </div>
+  <div class="grid2">
+    <div class="panel">
+      <h2>資料最少的合約</h2>
+      <table id="dash-cov"></table>
+    </div>
+    <div class="panel">
+      <h2>錯誤</h2>
+      <div id="dash-errors"></div>
+      <h2>資料缺口 <button id="btn-gaps" class="small">計算</button></h2>
+      <div id="dash-gaps"><span class="muted">按「計算」掃描全部 K 線（可能需數秒）</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 同步控制 -->
+<section id="tab-ctrl" class="tab">
+  <div class="panel">
+    <h2>控制</h2>
+    <div class="row">
+      <button id="btn-run" class="primary">立即執行同步</button>
+      <button id="btn-pause">暫停排程</button>
+      <button id="btn-resume">恢復排程</button>
+      <span id="ctrl-state"></span>
+    </div>
+    <p class="muted">暫停是在 <code>data/PAUSE</code> 建立旗標檔，排程仍會每 5 分鐘觸發，但會立即結束。暫停中按「立即執行」仍會強制跑一次。</p>
+    <div class="row">
+      <input id="only-insts" placeholder="只同步指定合約，以空白或逗號分隔，例如 BTC-USDT-SWAP PEPE-USDT-SWAP" style="flex:1">
+      <button id="btn-only">執行</button>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>同步日誌 <label class="muted"><input type="checkbox" id="log-follow" checked> 自動更新</label></h2>
+    <pre id="sync-log" class="log"></pre>
+  </div>
+</section>
+
+<!-- 回測 -->
+<section id="tab-bt" class="tab">
+  <div class="panel">
+    <h2>執行回測</h2>
+    <div class="row">
+      <label>起 <input type="date" id="bt-since"></label>
+      <label>迄 <input type="date" id="bt-until"></label>
+      <label><input type="checkbox" id="bt-sweep"> 參數掃描</label>
+      <label><input type="checkbox" id="bt-charts"> 產生事件圖</label>
+      <input id="bt-insts" placeholder="限定合約（選填）" style="flex:1">
+      <button id="btn-bt" class="primary">開始</button>
+      <button id="btn-bt-stop">停止</button>
+    </div>
+    <pre id="bt-log" class="log short"></pre>
+  </div>
+  <div class="panel">
+    <h2>結果 <small id="bt-meta" class="muted"></small></h2>
+    <div id="bt-coverage" class="muted"></div>
+    <h3>24h 比較（事件 vs 隨機基準）</h3>
+    <div class="scroll"><table id="bt-main"></table></div>
+    <h3>各時間長度平均報酬</h3>
+    <div class="scroll"><table id="bt-hz"></table></div>
+    <div class="grid2">
+      <div>
+        <h3>pump_red 依 BTC 環境</h3>
+        <table id="bt-regime"></table>
+      </div>
+      <div>
+        <h3>pump_red 每月</h3>
+        <table id="bt-month"></table>
+      </div>
+    </div>
+    <h3>參數掃描 <small class="muted">（全部組合；挑最好的一組必然偏樂觀）</small></h3>
+    <div class="scroll"><table id="bt-sweep-t"></table></div>
+    <h3>注意事項</h3>
+    <ul id="bt-caveats" class="muted"></ul>
+  </div>
+</section>
+
+<!-- 事件 -->
+<section id="tab-ev" class="tab">
+  <div class="panel">
+    <div class="row">
+      <select id="ev-mode">
+        <option value="pump_red">pump_red</option>
+        <option value="red_only">red_only</option>
+        <option value="pump_red_btcweak">pump_red_btcweak</option>
+        <option value="">全部模式</option>
+      </select>
+      <select id="ev-regime">
+        <option value="">全部 BTC 環境</option>
+        <option>strong</option><option>neutral</option><option>weak</option><option>unknown</option>
+      </select>
+      <input id="ev-inst" placeholder="合約關鍵字">
+      <button id="btn-ev">篩選</button>
+      <span id="ev-count" class="muted"></span>
+    </div>
+  </div>
+  <div class="grid-ev">
+    <div class="panel scroll tall"><table id="ev-table" class="clickable"></table></div>
+    <div class="panel" id="ev-detail"><span class="muted">點選左側事件查看</span></div>
+  </div>
+</section>
+
+<!-- K 線 -->
+<section id="tab-kl" class="tab">
+  <div class="panel">
+    <div class="row">
+      <input id="kl-inst" list="kl-insts" placeholder="合約，例如 BTC-USDT-SWAP">
+      <datalist id="kl-insts"></datalist>
+      <label>起 (UTC) <input type="datetime-local" id="kl-start"></label>
+      <label>迄 (UTC) <input type="datetime-local" id="kl-end"></label>
+      <select id="kl-span">
+        <option value="1">1 天</option><option value="3" selected>3 天</option>
+        <option value="7">7 天</option><option value="30">30 天</option><option value="69">最大</option>
+      </select>
+      <label><input type="checkbox" id="kl-btc" checked> BTC</label>
+      <button id="btn-kl" class="primary">載入</button>
+      <span id="kl-info" class="muted"></span>
+    </div>
+  </div>
+  <div class="panel">
+    <div id="kl-price" class="chart"></div>
+    <div id="kl-vol" class="chart small"></div>
+    <div id="kl-btc-chart" class="chart small"></div>
+  </div>
+</section>
+</main>
+
+<script src="/static/vendor/lightweight-charts.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

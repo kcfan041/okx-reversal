@@ -46,6 +46,24 @@ Enable-ScheduledTask  -TaskName okx-reversal-sync   # 恢復
 powershell -ExecutionPolicy Bypass -File scripts\uninstall_task.ps1   # 移除（保留資料）
 ```
 
+## 網頁監控台
+
+```powershell
+uv run python -m okxrev.web            # 開啟 http://127.0.0.1:8765/（自動開瀏覽器，Ctrl+C 結束）
+uv run python -m okxrev.web --port 9000 --no-browser
+```
+
+只綁本機 127.0.0.1，需要時手動開，關掉不影響排程。分頁：
+
+- **儀表板**：資料庫大小、回補各層進度、延遲、最近執行紀錄、錯誤、資料缺口
+- **同步控制**：立即執行、暫停／恢復、只同步指定合約、即時日誌
+- **回測**：從網頁執行（日期區間、參數掃描、事件圖），即時日誌，結果與隨機基準比較表
+- **事件**：篩選排序 `events.csv`，點選看詳細與事件圖，可跳到 K 線
+- **K 線**：任選合約與時間的互動 K 線、成交額、均量、BTC、事件標記
+
+暫停 = 建立 `data/PAUSE` 旗標檔：排程仍會觸發但立即結束（不需系統管理員權限）。
+命令列等效：`New-Item data\PAUSE` / `Remove-Item data\PAUSE`；暫停中可用 `--force` 強制執行一次。
+
 ## 回測
 
 ```powershell
@@ -82,6 +100,7 @@ okxrev/
   metrics.py     forward return、MAE/MFE、新高、統計、bootstrap
   backtest.py    回測 CLI
   charts.py      Event Replay 圖
+  web/           網頁監控台（FastAPI + 單頁 HTML，lightweight-charts）
 scripts/         Windows 排程安裝／移除
 tests/           pytest（含防偷看未來資料測試）
 ```
