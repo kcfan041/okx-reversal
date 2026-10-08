@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
 DuckDB 同一時間只允許「一個讀寫程序」**或**「多個唯讀程序」，兩者不能同時存在。
 
 - **sync**：先向 API 抓一批資料（不開資料庫），抓完才開讀寫連線、寫入、立刻關閉。每次持有連線的時間應在 1 秒內。
+  實作：累積到 3 萬列或 20 秒就寫一次；每次執行另在 `sync_runs` 表記錄一列摘要（供 `--status` 顯示）。
 - **backtest / charts / --status**：以 `read_only=True` 開啟；若被鎖，等待 2 秒重試，最多 30 次。
 - **sync 遇到資料庫被唯讀程序占用**：同樣等待重試；超過 60 秒仍無法寫入，就保留這批資料到下一輪，並寫日誌，不視為錯誤。
 - backtest 的資料讀取方式：**每次只讀一個合約**到 pandas，算完就釋放；不可一次把全表讀進記憶體（全表約 5,000 萬列）。
@@ -380,7 +381,8 @@ python -m okxrev.sync --only BTC-USDT-SWAP ETH-USDT-SWAP
      - 對象：所有 state = live 的合約，BTC 排第一
      - 每檔呼叫 /market/candles 一次
      - 若 newest_ts 距今超過 300 根（例如主機關機很久），
-       改用 history-candles 的 before 參數往後翻頁補到最新
+       改用 history-candles 往後翻頁補到最新
+       （實測：只給 before 會回傳「最新」100 根，必須同時給 after = before + 101 根 形成視窗）
      - 寫入後更新 newest_ts
   ↓
 3. 回補歷史（backfill），直到用完 run_budget_sec
