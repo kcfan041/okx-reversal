@@ -6,6 +6,7 @@ data/
 logs/
 results/charts/
 *.lock
+!uv.lock
 .DS_Store
 Thumbs.db
 .idea/
