@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+logs/
+results/charts/
+*.lock
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
