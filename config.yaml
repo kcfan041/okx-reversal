@@ -9,6 +9,9 @@ okx:
   proxy: null
   timeout_sec: 15
   max_requests_per_sec: 5
+  history_requests_per_sec: 8
+  market_requests_per_sec: 15
+  history_limit: 300
   max_retries: 5
   backoff_base_sec: 1.0
 
@@ -24,7 +27,7 @@ sync:
   forward_first: true
   backfill_start: "2025-10-01T00:00:00Z"
   backfill_layers_days: [30, 90, 180, 365]
-  backfill_pages_per_inst: 20
+  backfill_bars_per_inst: 2000
   smoke_insts: [BTC-USDT-SWAP, ETH-USDT-SWAP, SOL-USDT-SWAP, DOGE-USDT-SWAP]
   smoke_days: 1
 

@@ -1,5 +1,12 @@
 from okxrev.config import load_config
-from okxrev.sync import DAY_MS, InstState, is_done_for, layer_targets
+from okxrev.sync import DAY_MS, InstState, backfill_pages_per_inst, is_done_for, layer_targets
+
+
+def test_backfill_pages_per_inst():
+    assert backfill_pages_per_inst({"backfill_bars_per_inst": 2000}, 300) == 7
+    assert backfill_pages_per_inst({"backfill_bars_per_inst": 2000}, 100) == 20
+    assert backfill_pages_per_inst({}, 300) == 7
+    assert backfill_pages_per_inst({"backfill_bars_per_inst": 10}, 300) == 1
 
 
 def test_layer_targets_order_and_floor():

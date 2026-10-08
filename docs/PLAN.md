@@ -145,7 +145,10 @@ okx:
   base_url: https://www.okx.com
   proxy: null                 # 例如 http://127.0.0.1:7890
   timeout_sec: 15
-  max_requests_per_sec: 5     # OKX 上限 20 次/2 秒，取一半
+  max_requests_per_sec: 5     # 其他端點（instruments）
+  history_requests_per_sec: 8 # history-candles，實測上限約每秒 10 次
+  market_requests_per_sec: 15 # candles，OKX 上限 40 次/2 秒
+  history_limit: 300          # 文件寫 100，實測可到 300，見 5.3
   max_retries: 5
   backoff_base_sec: 1.0       # 指數退避：1, 2, 4, 8, 16 秒
 
@@ -161,6 +164,7 @@ sync:
   forward_first: true         # 先補最新資料，再用剩餘時間回補
   backfill_start: "2025-10-01T00:00:00Z"
   backfill_layers_days: [30, 90, 180, 365]   # 分層回補，見 7.4
+  backfill_bars_per_inst: 2000  # 每檔每次最多回補根數，之後換下一檔
   smoke_insts: [BTC-USDT-SWAP, ETH-USDT-SWAP, SOL-USDT-SWAP, DOGE-USDT-SWAP]
   smoke_days: 1
 
@@ -249,12 +253,13 @@ GET /api/v5/market/candles?instId={id}&bar=5m&limit=300
 ### 5.3 歷史 K 線（回補用）
 
 ```
-GET /api/v5/market/history-candles?instId={id}&bar=5m&limit=100&after={ts}
+GET /api/v5/market/history-candles?instId={id}&bar=5m&limit=300&after={ts}
 ```
 
 - `after={ts}`：回傳**早於** `ts` 的資料（往過去翻頁）。
 - `before={ts}`：回傳**晚於** `ts` 的資料。
-- 每次最多 100 根。
+- 文件寫每次最多 100 根，**實測（2026-10）`limit=300` 會回傳 300 根**，故設定 `history_limit: 300`。
+  若 OKX 日後改回 100，程式仍正確（以「回傳空」判斷結束，不依賴筆數），只是變慢；屆時把設定改回 100 即可。
 - 回傳空陣列 → 已到上市以前，該合約回補完成。
 
 ### 5.4 K 線欄位
@@ -278,7 +283,10 @@ GET /api/v5/market/history-candles?instId={id}&bar=5m&limit=100&after={ts}
 
 ### 5.5 限速與錯誤處理（`okx_client.py`）
 
-- 全域 token bucket，每秒最多 `max_requests_per_sec` 次。
+- 兩種 K 線端點各自限速（OKX 分開計算）：`history-candles` 用 `history_requests_per_sec`，
+  `candles` 用 `market_requests_per_sec`，其他端點用 `max_requests_per_sec`。
+- 實測（2026-10）：history-candles 每秒 10 次偶有 429、每秒 15 次約 1/3 被拒；candles 每秒 20 次無 429。
+- 自動降速：同一端點連續 3 次被限速，速率降 20%（最低為設定值一半）；60 秒內沒被限速則每 60 秒回升 10%。
 - 每次請求帶 `timeout`，使用 `requests.Session` 重用連線。
 - 錯誤分類：
 
@@ -382,12 +390,12 @@ python -m okxrev.sync --only BTC-USDT-SWAP ETH-USDT-SWAP
      - 每檔呼叫 /market/candles 一次
      - 若 newest_ts 距今超過 300 根（例如主機關機很久），
        改用 history-candles 往後翻頁補到最新
-       （實測：只給 before 會回傳「最新」100 根，必須同時給 after = before + 101 根 形成視窗）
+       （實測：只給 before 會回傳「最新」一頁，必須同時給 after = before + (history_limit+1) 根 形成視窗）
      - 寫入後更新 newest_ts
   ↓
 3. 回補歷史（backfill），直到用完 run_budget_sec
      - 依 7.4 分層順序挑選下一個要補的合約
-     - 每檔每次最多翻 N 頁（建議 20 頁 = 2000 根），再換下一檔，避免單檔獨占
+     - 每檔每次最多回補 `backfill_bars_per_inst` 根（2000 根 = 300 根一頁約 7 頁），再換下一檔，避免單檔獨占
      - 呼叫 history-candles，after = oldest_ts
      - 回傳空 → backfill_done = true
      - oldest_ts <= backfill_start → backfill_done = true
@@ -399,8 +407,9 @@ python -m okxrev.sync --only BTC-USDT-SWAP ETH-USDT-SWAP
 ### 7.3 時間預算
 
 - 從啟動開始計時；每次發請求前檢查是否超過 `run_budget_sec`，超過就收尾。
-- forward 預估：485 次請求 ÷ 每秒 5 次 ≈ 100 秒。
-- 剩下約 140 秒用於 backfill（約 700 次請求 = 7 萬根）。
+- forward：485 次請求 ÷ 每秒 15 次，實測約 40 秒。
+- 剩下約 200 秒用於 backfill：實測每輪約 1,400 頁、寫入約 42 萬根。
+- （v1 原設計每秒 5 次、每頁 100 根時，forward 約 100 秒、每輪只寫約 7 萬根。）
 - 首次執行（資料庫為空）時 forward 也會很快，因為沒有需要補的缺口。
 
 ### 7.4 分層回補順序
@@ -769,8 +778,8 @@ short_pnl_net_24h, incomplete
 |---|---|
 | 合約數 | 約 485 |
 | 一年 5m K 線 | 105,120 根/檔 → 全部約 5,100 萬列 |
-| 首次回補請求數 | 約 51 萬次（每次 100 根） |
-| 首次回補時間 | 以每秒 5 次、每 5 分鐘可用約 140 秒計算，約 1.5～2 天完成 |
+| 首次回補請求數 | 約 17 萬次（每次 300 根） |
+| 首次回補時間 | 實測每 5 分鐘一輪約 42 萬根，約 120 輪 ≈ **10 小時**（新上市幣資料較少，實際可能更快） |
 | 日常請求 | 每 5 分鐘約 485 次；每天約 14 萬次，網路流量約 50 MB |
 | CPU | 單核不到 5%，每次執行約 2～4 分鐘後結束 |
 | 記憶體 | sync 約 100～200 MB；backtest 逐檔讀取，約 500 MB 以內 |
@@ -819,7 +828,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install_task.ps1
 Get-Content logs\sync.log -Tail 20 -Wait
 uv run python -m okxrev.sync --status
 
-# 4. 回補完成後（約 1.5～2 天）
+# 4. 回補完成後（約 10 小時）
 uv run python -m okxrev.backtest --sweep
 ```
 

@@ -47,6 +47,7 @@ class Stats:
     backfill_pages: int = 0
     backfill_completed: int = 0
     errors: int = 0
+    forward_sec: float = 0.0
     new_insts: list[str] = field(default_factory=list)
     delisted: list[str] = field(default_factory=list)
 
@@ -57,6 +58,11 @@ def layer_targets(cfg: Config, now: int) -> list[int]:
     targets = [max(start, now - int(d) * DAY_MS) for d in days[:-1]]
     targets.append(start)
     return targets
+
+
+def backfill_pages_per_inst(sync_cfg: dict[str, Any], history_limit: int) -> int:
+    bars = int(sync_cfg.get("backfill_bars_per_inst", 2000))
+    return max(1, -(-bars // max(1, int(history_limit))))
 
 
 def is_done_for(st: InstState, target: int) -> bool:
@@ -214,12 +220,13 @@ class Syncer:
         if st.newest_ts is not None and first_latest > st.newest_ts + BAR_MS:
             cursor = st.newest_ts
             log.info("%s: forward gap %s -> %s, filling", st.inst_id, ms_to_str(cursor), ms_to_str(first_latest))
+            lim = self.client.history_limit
             while cursor + BAR_MS < first_latest:
                 page, _ = self.client.history_candles(
-                    st.inst_id, self.bar, limit=100, before=cursor, after=cursor + 101 * BAR_MS
+                    st.inst_id, self.bar, limit=lim, before=cursor, after=cursor + (lim + 1) * BAR_MS
                 )
                 if page.empty:
-                    cursor += 100 * BAR_MS
+                    cursor += lim * BAR_MS
                     continue
                 page = page[page["ts"] < first_latest]
                 if page.empty:
@@ -233,7 +240,7 @@ class Syncer:
     def backfill(self, smoke_target: int | None = None) -> None:
         now = db.now_ms()
         targets = [smoke_target] if smoke_target is not None else layer_targets(self.cfg, now)
-        pages_per = int(self.cfg.sync.get("backfill_pages_per_inst", 20))
+        pages_per = backfill_pages_per_inst(self.cfg.sync, self.client.history_limit)
         start_ms = self.cfg.backfill_start_ms
         for li, target in enumerate(targets, 1):
             rounds = 0
@@ -269,7 +276,7 @@ class Syncer:
             if is_done_for(st, target):
                 return
             assert st.oldest_ts is not None
-            df, n_raw = self.client.history_candles(st.inst_id, self.bar, limit=100, after=st.oldest_ts)
+            df, n_raw = self.client.history_candles(st.inst_id, self.bar, after=st.oldest_ts)
             self.stats.backfill_pages += 1
             now = db.now_ms()
             if n_raw == 0:
@@ -317,7 +324,11 @@ def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool
             phases = ["forward", "backfill"] if cfg.sync.get("forward_first", True) else ["backfill", "forward"]
             for ph in phases:
                 if ph == "forward":
-                    syncer.forward()
+                    t_fw = time.monotonic()
+                    try:
+                        syncer.forward()
+                    finally:
+                        syncer.stats.forward_sec = time.monotonic() - t_fw
                 elif not no_backfill:
                     smoke_target = db.now_ms() - int(cfg.sync["smoke_days"]) * DAY_MS if smoke else None
                     syncer.backfill(smoke_target)
@@ -345,8 +356,9 @@ def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool
         }
         ok = syncer.writer.flush(run=run)
         log.info(
-            "run done: %.1fs, %d requests (%d retries), %d rows, forward %d, backfill pages %d (+%d done), errors %d, %s%s",
-            time.monotonic() - started, s.requests, syncer.client.n_retries, s.rows, s.forward_insts,
+            "run done: %.1fs, %d requests (%d retries, %d rate-limited), %d rows, forward %d in %.0fs, backfill pages %d (+%d done), errors %d, %s%s",
+            time.monotonic() - started, s.requests, syncer.client.n_retries, syncer.client.n_limited, s.rows,
+            s.forward_insts, s.forward_sec,
             s.backfill_pages, s.backfill_completed, s.errors, note, "" if ok else " [UNFLUSHED]",
         )
         return 1 if note.startswith("error") else 0

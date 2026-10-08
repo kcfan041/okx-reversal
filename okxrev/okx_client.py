@@ -37,21 +37,69 @@ class BudgetExceeded(Exception):
 
 
 class RateLimiter:
-    def __init__(self, rate_per_sec: float, clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
-        self.interval = 1.0 / float(rate_per_sec)
+    def __init__(
+        self,
+        rate_per_sec: float,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        name: str = "",
+        min_ratio: float = 0.5,
+        throttle_after: int = 3,
+        recover_after_sec: float = 60.0,
+    ):
+        self.name = name
+        self.target = float(rate_per_sec)
+        self.rate = self.target
+        self.min_rate = self.target * min_ratio
+        self.throttle_after = throttle_after
+        self.recover_after_sec = recover_after_sec
         self._next = 0.0
         self._lock = threading.Lock()
         self._clock = clock
         self._sleep = sleep
+        self._consec = 0
+        self._last_limited = -1e18
+        self._last_adjust = 0.0
+        self.n_limited = 0
+
+    @property
+    def interval(self) -> float:
+        return 1.0 / self.rate
 
     def acquire(self) -> None:
         with self._lock:
             now = self._clock()
+            self._maybe_recover(now)
             wait = self._next - now
             if wait > 0:
                 self._sleep(wait)
                 now = self._clock()
             self._next = max(now, self._next) + self.interval
+
+    def _maybe_recover(self, now: float) -> None:
+        if self.rate >= self.target:
+            return
+        if now - self._last_limited >= self.recover_after_sec and now - self._last_adjust >= self.recover_after_sec:
+            old = self.rate
+            self.rate = min(self.target, self.rate * 1.1)
+            self._last_adjust = now
+            log.info("rate limiter %s: recover %.2f -> %.2f req/s", self.name, old, self.rate)
+
+    def on_limited(self) -> None:
+        with self._lock:
+            now = self._clock()
+            self.n_limited += 1
+            self._consec += 1
+            self._last_limited = now
+            if self._consec >= self.throttle_after and self.rate > self.min_rate:
+                old = self.rate
+                self.rate = max(self.min_rate, self.rate * 0.8)
+                self._consec = 0
+                self._last_adjust = now
+                log.warning("rate limiter %s: throttled %.2f -> %.2f req/s", self.name, old, self.rate)
+
+    def on_success(self) -> None:
+        self._consec = 0
 
 
 @dataclass
@@ -98,7 +146,13 @@ class OkxClient:
         self.timeout = float(okx_cfg["timeout_sec"])
         self.max_retries = int(okx_cfg["max_retries"])
         self.backoff_base = float(okx_cfg["backoff_base_sec"])
-        self.limiter = RateLimiter(okx_cfg["max_requests_per_sec"], sleep=sleep)
+        default_rate = float(okx_cfg["max_requests_per_sec"])
+        self.limiters = {
+            "history": RateLimiter(okx_cfg.get("history_requests_per_sec", default_rate), sleep=sleep, name="history"),
+            "market": RateLimiter(okx_cfg.get("market_requests_per_sec", default_rate), sleep=sleep, name="market"),
+            "default": RateLimiter(default_rate, sleep=sleep, name="default"),
+        }
+        self.history_limit = int(okx_cfg.get("history_limit", 100))
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "okx-reversal/0.1"
         proxy = okx_cfg.get("proxy")
@@ -122,13 +176,35 @@ class OkxClient:
         if self.deadline is not None and time.monotonic() >= self.deadline:
             raise BudgetExceeded()
 
+    @property
+    def limiter(self) -> RateLimiter:
+        return self.limiters["default"]
+
+    @limiter.setter
+    def limiter(self, value: RateLimiter) -> None:
+        for k in self.limiters:
+            self.limiters[k] = value
+
+    def limiter_for(self, path: str) -> RateLimiter:
+        if path.endswith("/history-candles"):
+            return self.limiters["history"]
+        if path.endswith("/market/candles"):
+            return self.limiters["market"]
+        return self.limiters["default"]
+
+    @property
+    def n_limited(self) -> int:
+        return sum(lim.n_limited for lim in {id(v): v for v in self.limiters.values()}.values())
+
     def get(self, path: str, params: dict[str, Any]) -> list[Any]:
         last_err: str = ""
+        limiter = self.limiter_for(path)
         for attempt in range(self.max_retries + 1):
             self._check_budget()
-            self.limiter.acquire()
+            limiter.acquire()
             self.n_requests += 1
             retry = False
+            limited = False
             try:
                 resp = self.session.get(self.base_url + path, params=params, timeout=self.timeout)
             except requests.RequestException as e:
@@ -138,6 +214,7 @@ class OkxClient:
                 if resp.status_code == 429 or resp.status_code >= 500:
                     last_err = f"HTTP {resp.status_code}"
                     retry = True
+                    limited = resp.status_code == 429
                 else:
                     try:
                         body = resp.json()
@@ -149,15 +226,19 @@ class OkxClient:
                     else:
                         code = str(body.get("code", ""))
                         if code == "0":
+                            limiter.on_success()
                             return body.get("data", [])
                         msg = str(body.get("msg", ""))
                         if code in CODE_RATE_LIMIT:
                             last_err = f"code {code} {msg}"
                             retry = True
+                            limited = True
                         elif code in CODE_INST_NOT_FOUND:
                             raise InstrumentNotFound(code, msg, path)
                         else:
                             raise OkxError(code, msg, path)
+            if limited:
+                limiter.on_limited()
             if retry and attempt < self.max_retries:
                 delay = self.backoff_base * (2 ** attempt)
                 self.n_retries += 1
@@ -189,7 +270,8 @@ class OkxClient:
             params["before"] = str(before)
         return parse_candles(self.get("/api/v5/market/candles", params))
 
-    def history_candles(self, inst_id: str, bar: str = "5m", limit: int = 100, after: int | None = None, before: int | None = None) -> tuple[pd.DataFrame, int]:
+    def history_candles(self, inst_id: str, bar: str = "5m", limit: int | None = None, after: int | None = None, before: int | None = None) -> tuple[pd.DataFrame, int]:
+        limit = self.history_limit if limit is None else limit
         params: dict[str, Any] = {"instId": inst_id, "bar": bar, "limit": str(limit)}
         if after is not None:
             params["after"] = str(after)

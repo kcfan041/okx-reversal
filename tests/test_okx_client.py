@@ -98,6 +98,73 @@ def test_other_code_raises():
         c.get("/x", {})
 
 
+def test_separate_limiters_by_path():
+    cfg = {**CFG, "history_requests_per_sec": 8, "market_requests_per_sec": 15, "history_limit": 300}
+    c = OkxClient(cfg)
+    assert c.limiter_for("/api/v5/market/history-candles").target == 8
+    assert c.limiter_for("/api/v5/market/candles").target == 15
+    assert c.limiter_for("/api/v5/public/instruments").target == 1000
+    assert c.history_limit == 300
+
+
+def test_limiter_fallback_to_default_rate():
+    c = OkxClient(CFG)
+    assert c.limiter_for("/api/v5/market/history-candles").target == 1000
+    assert c.history_limit == 100
+
+
+def test_history_uses_configured_limit():
+    cfg = {**CFG, "history_limit": 300}
+    c = OkxClient(cfg, sleep=lambda d: None)
+    seen = {}
+
+    class S(FakeSession):
+        def get(self, url, params=None, timeout=None):
+            seen.update(params)
+            return FakeResp(200, {"code": "0", "data": []})
+
+    c.session = S([])
+    c.history_candles("X-USDT-SWAP", after=1)
+    assert seen["limit"] == "300"
+
+
+def test_limiter_throttle_and_recover():
+    t = [0.0]
+    rl = RateLimiter(10, clock=lambda: t[0], sleep=lambda d: t.__setitem__(0, t[0] + d))
+    rl.on_limited(); rl.on_limited()
+    assert rl.rate == 10
+    rl.on_limited()
+    assert rl.rate == pytest.approx(8)
+    for _ in range(30):
+        rl.on_limited()
+    assert rl.rate == pytest.approx(5)
+    assert rl.n_limited == 33
+    t[0] += 61
+    rl.acquire()
+    assert rl.rate == pytest.approx(5.5)
+    t[0] += 10
+    rl.acquire()
+    assert rl.rate == pytest.approx(5.5)
+    for _ in range(20):
+        t[0] += 61
+        rl.acquire()
+    assert rl.rate == pytest.approx(10)
+
+
+def test_success_resets_consecutive():
+    rl = RateLimiter(10)
+    rl.on_limited(); rl.on_limited(); rl.on_success(); rl.on_limited()
+    assert rl.rate == 10
+
+
+def test_get_signals_limiter():
+    c, _ = make([FakeResp(429, {}), FakeResp(429, {}), FakeResp(429, {}), FakeResp(200, {"code": "0", "data": []})])
+    c.limiter = RateLimiter(10, sleep=lambda d: None)
+    c.get("/x", {})
+    assert c.limiter.rate == pytest.approx(8)
+    assert c.n_limited == 3
+
+
 def test_parse_candles_confirm_and_order():
     rows = [
         ["3000", "1", "2", "0.5", "1.5", "10", "10", "15", "0"],

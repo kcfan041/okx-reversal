@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install_task.ps1
 ```
 
 排程：`okx-reversal-sync`，每 5 分鐘、單次最多 4 分鐘、低優先權、不論是否登入都執行，
-直接呼叫 `.venv\Scripts\pythonw.exe -m okxrev.sync`。首次回補一年約需 1.5～2 天。
+直接呼叫 `.venv\Scripts\pythonw.exe -m okxrev.sync`。首次回補一年約需 10 小時。
 
 ## 日常操作
 
