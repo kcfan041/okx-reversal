@@ -30,3 +30,4 @@
 | D24 | Repo | `kcfan041/okx-reversal`，私人 | 使用者要求名稱短、私人 | — |
 | D25 | 開發方式 | 規劃機只寫文件並上傳；實作在另一端進行 | 使用者要求 | 在規劃機寫程式但不測試 |
 | D26 | 時間 | 全部 UTC，資料庫存毫秒整數 | 與 OKX API 一致，避免時區錯誤 | 本地時間 |
+| D27 | 套件管理 | uv：`pyproject.toml` + `uv.lock`，Python 3.12 由 uv 安裝；排程仍直接呼叫 `.venv\Scripts\pythonw.exe` | 主機已有 uv 與 3.12；lock 檔保證重建一致；`uv sync` 一步完成部署 | `requirements.txt` + pip（無 lock）、只用 uv 建 venv |

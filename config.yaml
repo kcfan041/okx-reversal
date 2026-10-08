@@ -1,0 +1,83 @@
+paths:
+  db: data/okx.duckdb
+  logs: logs
+  results: results
+  lock: data/sync.lock
+
+okx:
+  base_url: https://www.okx.com
+  proxy: null
+  timeout_sec: 15
+  max_requests_per_sec: 5
+  max_retries: 5
+  backoff_base_sec: 1.0
+
+universe:
+  inst_type: SWAP
+  quote_suffix: -USDT-SWAP
+  btc_inst: BTC-USDT-SWAP
+  exclude: []
+  bar: 5m
+
+sync:
+  run_budget_sec: 240
+  forward_first: true
+  backfill_start: "2025-10-01T00:00:00Z"
+  backfill_layers_days: [30, 90, 180, 365]
+  backfill_pages_per_inst: 20
+  smoke_insts: [BTC-USDT-SWAP, ETH-USDT-SWAP, SOL-USDT-SWAP, DOGE-USDT-SWAP]
+  smoke_days: 1
+
+detector:
+  vol_ma_bars: 20
+  pump:
+    ret_24h_min: 0.50
+    ret_6h_min: 0.30
+    vol_ratio_min: 4.0
+    vol_lookback_bars: 72
+    measure: close_to_close
+    allow_new_listing: true
+    new_listing_min_bars: 72
+  red_candle:
+    ret_max: -0.08
+    vol_ratio_min: 4.0
+    ret_basis: prev_close
+  cooldown_bars: 288
+
+metrics:
+  entry: next_open
+  horizons:
+    30m: 6
+    1h: 12
+    6h: 72
+    24h: 288
+    3d: 864
+  excursion_bars: 288
+  big_drop_threshold: -0.20
+  fee_per_side: 0.0005
+  slippage_per_side: 0.0005
+
+btc_regime:
+  ret_4h_weak: -0.01
+  ret_4h_strong: 0.01
+  ema_bars: 288
+
+backtest:
+  since: null
+  until: null
+  sweep:
+    red_ret_max: [-0.05, -0.08, -0.10, -0.15]
+    red_vol_ratio_min: [3.0, 4.0, 6.0]
+  baseline:
+    random_samples: 5000
+    seed: 42
+  bootstrap:
+    iterations: 2000
+    seed: 42
+
+charts:
+  enabled: true
+  max_charts: 300
+  pre_hours: 6
+  post_hours: 48
+  dpi: 110

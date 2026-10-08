@@ -56,11 +56,12 @@ Open Interest、Funding Rate、清算資料、Order Book、lower high／收復�
 | 項目 | 規格 |
 |---|---|
 | 正式執行機 | Windows 主機，幾乎 24/7 開機 |
-| Python | 3.11 或 3.12（建議 3.12；duckdb、pyarrow 輪子最穩） |
-| 虛擬環境 | 專案內 `.venv` |
+| Python | 3.12（由 uv 管理，`.python-version`） |
+| 套件管理 | [uv](https://docs.astral.sh/uv/)：`pyproject.toml` + `uv.lock` |
+| 虛擬環境 | 專案內 `.venv`（`uv sync` 建立） |
 | 開發機 | 任意（macOS / Windows 皆可），程式必須跨平台 |
 
-### `requirements.txt`
+### 依賴（`pyproject.toml`）
 
 ```text
 pandas>=2.2
@@ -73,7 +74,12 @@ matplotlib>=3.8
 filelock>=3.13
 ```
 
+開發依賴（`[dependency-groups] dev`）：`pytest`。`uv.lock` 進 git，確保各機器版本一致。
+
 不使用 Polars、mplfinance、ccxt，以減少依賴。
+
+注意：uv 管理的 Python 安裝在使用者目錄（Windows：`%APPDATA%\uv\python\`），`.venv` 依賴它；
+不要 `uv python uninstall` 這個版本，否則排程會失效。
 
 ### 跨平台規則
 
@@ -89,7 +95,9 @@ filelock>=3.13
 ```text
 okx-reversal/
 ├── README.md
-├── requirements.txt
+├── pyproject.toml
+├── uv.lock
+├── .python-version
 ├── config.yaml
 ├── .gitignore
 ├── .gitattributes
@@ -772,7 +780,7 @@ short_pnl_net_24h, incomplete
 
 | # | 工作 | 驗收標準 |
 |---|---|---|
-| 1 | `config.py`、`log.py`、`requirements.txt`、`config.yaml` | 讀取設定成功，路徑正確解析為絕對路徑；日誌寫入 `logs/` |
+| 1 | `config.py`、`log.py`、`pyproject.toml`、`config.yaml` | 讀取設定成功，路徑正確解析為絕對路徑；日誌寫入 `logs/` |
 | 2 | `okx_client.py` | 能取得合約清單（約 485 檔）、BTC 最新 300 根、BTC 歷史 100 根；人為加快速率時能觸發並正確處理 429 |
 | 3 | `db.py` | 建表成功；同一批資料寫入兩次，列數不變；讀寫連線與唯讀連線互相等待時不會崩潰 |
 | 4 | `sync.py` + `--smoke` | `--smoke` 約 1 分鐘內完成；`--status` 顯示 4 檔各約 288 根；中途 Ctrl+C 後再執行能接續、不重複 |
@@ -784,43 +792,43 @@ short_pnl_net_24h, incomplete
 | 10 | `charts.py` | 隨機抽 10 張圖人工檢查，事件標記位置正確 |
 | 11 | README | 照 README 在一台乾淨的 Windows 機器上能從零完成部署 |
 
-測試框架：`pytest`（列在 `requirements-dev.txt`，不放進正式依賴）。
+測試框架：`pytest`（列在 `pyproject.toml` 的 `dev` group，不放進正式依賴）。執行：`uv run pytest`。
 
 ---
 
 ## 17. 部署步驟（Windows 主機）
 
 ```powershell
-# 0. 前置：安裝 Python 3.12（勾選 py launcher）、Git for Windows（或 gh 並 gh auth login）
+# 0. 前置：安裝 uv（winget install astral-sh.uv）、Git for Windows（或 gh 並 gh auth login）
 
 git clone https://github.com/kcfan041/okx-reversal
 cd okx-reversal
-py -3.12 -m venv .venv
-.venv\Scripts\python -m pip install -U pip
-.venv\Scripts\pip install -r requirements.txt
+uv sync                      # 自動下載 Python 3.12、建立 .venv、依 uv.lock 安裝
 
 # 1. 小型驗證（約 1 分鐘）
-.venv\Scripts\python -m okxrev.sync --smoke
-.venv\Scripts\python -m okxrev.sync --status
-.venv\Scripts\python -m okxrev.backtest --no-charts
+uv run python -m okxrev.sync --smoke
+uv run python -m okxrev.sync --status
+uv run python -m okxrev.backtest --no-charts
 
 # 2. 正常的話，安裝排程（以系統管理員身分開啟 PowerShell）
 powershell -ExecutionPolicy Bypass -File scripts\install_task.ps1
 
 # 3. 觀察
 Get-Content logs\sync.log -Tail 20 -Wait
-.venv\Scripts\python -m okxrev.sync --status
+uv run python -m okxrev.sync --status
 
 # 4. 回補完成後（約 1.5～2 天）
-.venv\Scripts\python -m okxrev.backtest --sweep
+uv run python -m okxrev.backtest --sweep
 ```
+
+排程直接呼叫 `.venv\Scripts\pythonw.exe`，不經過 uv。
 
 更新程式：
 
 ```powershell
 Disable-ScheduledTask -TaskName okx-reversal-sync
 git pull
-.venv\Scripts\pip install -r requirements.txt
+uv sync
 Enable-ScheduledTask -TaskName okx-reversal-sync
 ```
 
