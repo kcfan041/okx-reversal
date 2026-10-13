@@ -16,6 +16,34 @@ from okxrev.config import Config
 
 TASK_NAME = "okx-reversal-sync"
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+PRIORITY_FLAGS = {"idle": 0x00000040, "below_normal": 0x00004000, "normal": 0}
+THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS", "OKXREV_THREADS")
+
+
+def background_settings(cfg: Config) -> tuple[int, int]:
+    b = cfg.raw.get("background") or {}
+    prio = str(b.get("priority", "idle")).lower()
+    flags = CREATE_NO_WINDOW | (PRIORITY_FLAGS.get(prio, PRIORITY_FLAGS["idle"]) if sys.platform == "win32" else 0)
+    return flags, max(1, int(b.get("threads", 2)))
+
+
+def background_env(cfg: Config, base: dict[str, str] | None = None) -> dict[str, str]:
+    _, n = background_settings(cfg)
+    env = dict(os.environ if base is None else base)
+    env.update({k: str(n) for k in THREAD_VARS})
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def background_popen(cfg: Config, args: list[str], **kw: Any) -> subprocess.Popen:
+    """Start a CPU-heavy helper process at low priority with a small thread budget so games/recording keep priority."""
+    flags, _ = background_settings(cfg)
+    kw.setdefault("cwd", str(cfg.paths.root))
+    kw.setdefault("stdin", subprocess.DEVNULL)
+    kw.setdefault("stdout", subprocess.DEVNULL)
+    kw.setdefault("stderr", subprocess.DEVNULL)
+    kw["env"] = background_env(cfg, kw.get("env"))
+    return subprocess.Popen(args, creationflags=flags, **kw)
 
 
 def venv_python(cfg: Config, windowless: bool = False) -> str:
@@ -101,7 +129,9 @@ def tail(path: Path, lines: int = 200, max_bytes: int = 512 * 1024) -> list[str]
 
 
 class Job:
-    def __init__(self) -> None:
+    def __init__(self, module: str = "okxrev.backtest", label: str = "回測") -> None:
+        self.module = module
+        self.label = label
         self.lock = threading.Lock()
         self.proc: subprocess.Popen[str] | None = None
         self.lines: deque[str] = deque(maxlen=2000)
@@ -121,24 +151,21 @@ class Job:
                 "log": list(self.lines),
             }
 
-    def start(self, cfg: Config, args: list[str]) -> dict[str, Any]:
+    def start(self, cfg: Config, args: list[str], module: str | None = None) -> dict[str, Any]:
         with self.lock:
             if self.proc is not None and self.returncode is None:
-                return {"ok": False, "message": "已有回測正在執行"}
+                return {"ok": False, "message": f"已有{self.label}正在執行"}
             self.lines.clear()
             self.args = args
             self.started_at = time.time()
             self.ended_at = None
             self.returncode = None
-            self.proc = subprocess.Popen(
-                [venv_python(cfg), "-u", "-m", "okxrev.backtest", *args],
-                cwd=str(cfg.paths.root), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-                creationflags=CREATE_NO_WINDOW,
-                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            self.proc = background_popen(
+                cfg, [venv_python(cfg), "-u", "-m", module or self.module, *args],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
             )
         threading.Thread(target=self._pump, daemon=True).start()
-        return {"ok": True, "message": "回測已啟動"}
+        return {"ok": True, "message": f"{self.label}已啟動"}
 
     def _pump(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
@@ -153,6 +180,6 @@ class Job:
     def stop(self) -> dict[str, Any]:
         with self.lock:
             if self.proc is None or self.returncode is not None:
-                return {"ok": False, "message": "沒有執行中的回測"}
+                return {"ok": False, "message": f"沒有執行中的{self.label}"}
             self.proc.terminate()
         return {"ok": True, "message": "已送出停止"}

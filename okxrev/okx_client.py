@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import urlencode
 
 import pandas as pd
 import requests
@@ -102,6 +107,23 @@ class RateLimiter:
         self._consec = 0
 
 
+@dataclass(frozen=True)
+class Credentials:
+    key: str
+    secret: str = field(repr=False)
+    passphrase: str = field(repr=False)
+
+
+def okx_timestamp(now: datetime | None = None) -> str:
+    now = now or datetime.now(timezone.utc)
+    return now.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def sign_request(secret: str, timestamp: str, method: str, request_path: str, body: str = "") -> str:
+    msg = f"{timestamp}{method.upper()}{request_path}{body}".encode()
+    return base64.b64encode(hmac.new(secret.encode(), msg, hashlib.sha256).digest()).decode()
+
+
 @dataclass
 class Instrument:
     inst_id: str
@@ -141,7 +163,14 @@ def parse_candles(rows: list[list[str]], confirmed_only: bool = True) -> pd.Data
 
 
 class OkxClient:
-    def __init__(self, okx_cfg: dict[str, Any], deadline: float | None = None, sleep: Callable[[float], None] = time.sleep):
+    def __init__(
+        self,
+        okx_cfg: dict[str, Any],
+        deadline: float | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        credentials: Credentials | None = None,
+    ):
+        self.credentials = credentials
         self.base_url = okx_cfg["base_url"].rstrip("/")
         self.timeout = float(okx_cfg["timeout_sec"])
         self.max_retries = int(okx_cfg["max_retries"])
@@ -151,6 +180,7 @@ class OkxClient:
             "history": RateLimiter(okx_cfg.get("history_requests_per_sec", default_rate), sleep=sleep, name="history"),
             "market": RateLimiter(okx_cfg.get("market_requests_per_sec", default_rate), sleep=sleep, name="market"),
             "default": RateLimiter(default_rate, sleep=sleep, name="default"),
+            "private": RateLimiter(okx_cfg.get("private_requests_per_sec", min(default_rate, 4.0)), sleep=sleep, name="private"),
         }
         self.history_limit = int(okx_cfg.get("history_limit", 100))
         self.session = requests.Session()
@@ -186,6 +216,12 @@ class OkxClient:
             self.limiters[k] = value
 
     def limiter_for(self, path: str) -> RateLimiter:
+        if path.startswith("/api/v5/rubik/"):
+            if "rubik" not in self.limiters:
+                self.limiters["rubik"] = RateLimiter(2.2, sleep=self._sleep, name="rubik")
+            return self.limiters["rubik"]
+        if path.startswith(("/api/v5/account/", "/api/v5/trade/", "/api/v5/asset/")):
+            return self.limiters["private"]
         if path.endswith("/history-candles"):
             return self.limiters["history"]
         if path.endswith("/market/candles"):
@@ -196,7 +232,23 @@ class OkxClient:
     def n_limited(self) -> int:
         return sum(lim.n_limited for lim in {id(v): v for v in self.limiters.values()}.values())
 
-    def get(self, path: str, params: dict[str, Any]) -> list[Any]:
+    def _auth_headers(self, path: str, params: dict[str, Any]) -> dict[str, str]:
+        if self.credentials is None:
+            raise OkxError("auth", "API credentials not configured", path)
+        qs = urlencode(params)
+        request_path = path + ("?" + qs if qs else "")
+        ts = okx_timestamp()
+        return {
+            "OK-ACCESS-KEY": self.credentials.key,
+            "OK-ACCESS-SIGN": sign_request(self.credentials.secret, ts, "GET", request_path),
+            "OK-ACCESS-TIMESTAMP": ts,
+            "OK-ACCESS-PASSPHRASE": self.credentials.passphrase,
+        }
+
+    def get_private(self, path: str, params: dict[str, Any]) -> list[Any]:
+        return self.get(path, params, private=True)
+
+    def get(self, path: str, params: dict[str, Any], private: bool = False) -> list[Any]:
         last_err: str = ""
         limiter = self.limiter_for(path)
         for attempt in range(self.max_retries + 1):
@@ -206,7 +258,11 @@ class OkxClient:
             retry = False
             limited = False
             try:
-                resp = self.session.get(self.base_url + path, params=params, timeout=self.timeout)
+                if private:
+                    resp = self.session.get(self.base_url + path, params=params, timeout=self.timeout,
+                                            headers=self._auth_headers(path, params))
+                else:
+                    resp = self.session.get(self.base_url + path, params=params, timeout=self.timeout)
             except requests.RequestException as e:
                 last_err = f"{type(e).__name__}: {e}"
                 retry = True

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,6 +85,26 @@ class Config:
         return self.raw["charts"]
 
     @property
+    def account(self) -> dict[str, Any]:
+        return self.raw.get("account") or {}
+
+    @property
+    def account_db(self) -> Path:
+        return _resolve(self.account.get("db", "data/account.duckdb"), self.paths.root)
+
+    @property
+    def paper(self) -> dict[str, Any]:
+        return self.raw.get("paper") or {}
+
+    @property
+    def paper_db(self) -> Path:
+        return _resolve(self.paper.get("db", "data/paper.duckdb"), self.paths.root)
+
+    @property
+    def models_dir(self) -> Path:
+        return _resolve(self.paper.get("models_dir", "data/models"), self.paths.root)
+
+    @property
     def backfill_start_ms(self) -> int:
         return parse_utc_ms(self.sync["backfill_start"])
 
@@ -143,6 +164,43 @@ def validate(raw: dict[str, Any]) -> None:
         raise ConfigError("detector.red_candle.ret_basis must be prev_close or open")
     if raw["detector"]["pump"]["measure"] not in ("close_to_close", "low_to_close"):
         raise ConfigError("detector.pump.measure must be close_to_close or low_to_close")
+
+
+def read_dotenv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        if k.startswith("export "):
+            k = k[7:].strip()
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        out[k] = v
+    return out
+
+
+ENV_KEYS = ("OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE")
+
+
+def load_env(keys: tuple[str, ...], root: Path | None = None, environ: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(read_dotenv((root or REPO_ROOT) / ".env"))
+    env.update({k: v for k, v in (os.environ if environ is None else environ).items() if k in keys and v})
+    return {k: env[k].strip() for k in keys if env.get(k, "").strip()}
+
+
+def load_credentials(root: Path | None = None, environ: dict[str, str] | None = None) -> tuple[str, str, str] | None:
+    env = dict(read_dotenv((root or REPO_ROOT) / ".env"))
+    env.update({k: v for k, v in (os.environ if environ is None else environ).items() if k in ENV_KEYS and v})
+    vals = tuple(env.get(k, "").strip() for k in ENV_KEYS)
+    if not all(vals):
+        return None
+    return vals  # type: ignore[return-value]
 
 
 def load_config(path: str | Path | None = None, root: Path | None = None) -> Config:

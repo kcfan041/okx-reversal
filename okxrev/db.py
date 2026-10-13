@@ -67,7 +67,8 @@ class DbBusy(Exception):
 
 def _is_lock_error(e: Exception) -> bool:
     msg = str(e).lower()
-    return any(k in msg for k in ("lock", "already open", "used by another", "conflicting"))
+    return any(k in msg for k in ("lock", "already open", "used by another", "being used by", "conflicting", "cannot open file",
+                                  "另一個程序", "另一个程序"))
 
 
 def connect(
