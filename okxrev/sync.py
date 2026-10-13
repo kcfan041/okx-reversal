@@ -332,6 +332,13 @@ def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool
                 elif not no_backfill:
                     smoke_target = db.now_ms() - int(cfg.sync["smoke_days"]) * DAY_MS if smoke else None
                     syncer.backfill(smoke_target)
+            if cfg.sync.get("derivs", True) and not smoke and not only:
+                syncer.writer.flush()
+                from okxrev.derivs import sync_derivs
+                sync_derivs(cfg, syncer.client, deadline - 5, max_sec=float(cfg.sync.get("derivs_max_sec", 60)))
+                from okxrev.heat import focus_insts
+                from okxrev.heatdata import sync_heat
+                sync_heat(cfg, syncer.client, deadline - 5, max_sec=float(cfg.sync.get("heat_max_sec", 60)), focus=focus_insts(cfg))
         except BudgetExceeded:
             note = "budget"
             log.info("time budget reached")
@@ -365,6 +372,17 @@ def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool
     finally:
         syncer.close()
         lock.release()
+        if cfg.paper.get("enabled", True) and not smoke and not only:
+            spawn_paper(cfg)
+
+
+def spawn_paper(cfg: Config) -> None:
+    """Run one paper-trading tick in a detached low-priority process (never blocks or fails the sync)."""
+    from okxrev.web.tasks import background_popen, venv_python
+    try:
+        background_popen(cfg, [venv_python(cfg, windowless=True), "-m", "okxrev.paper", "--tick", "--quiet"])
+    except OSError as e:
+        log.warning("could not start paper tick: %s", e)
 
 
 def gap_summary(con: Any) -> pd.DataFrame:
