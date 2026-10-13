@@ -78,6 +78,86 @@ backtest:
     iterations: 2000
     seed: 42
 
+account:
+  db: data/account.duckdb
+  inst_types: [SWAP, FUTURES, SPOT]
+  history_days: 92
+  page_limit: 100
+  review:
+    post_exit_bars: [12, 72, 288]
+    max_hold_bars_for_path: 8640
+    revenge_window_min: 30
+    stop_grid: [0.03, 0.05, 0.08, 0.12]
+    hold_grid_bars: [12, 72, 288]
+  replicate:
+    min_trades_per_group: 5
+    oos_split: 0.5
+    max_matches_per_rule: 20000
+    cooldown_bars: 288
+
+heat:
+  watchlist: [CT-USDT-SWAP]
+  backfill_start: "2024-09-19"
+  pct_window_days: 30
+  alert_threshold: 80
+  alert_cooldown_h: 6
+  top_n: 10
+
+chat:
+  model: claude
+  max_rounds: 12
+  max_calls: 40
+  max_tool_chars: 60000
+  tool_result_chars: 12000
+  daily_calls: 500
+  max_tokens: 4000
+
+lab:
+  split_frac: 0.6667
+  similar_k: 200
+  confirm_n: 200
+  recent_hours: 24
+
+background:
+  priority: idle
+  threads: 2
+
+replay:
+  start: "2024-10-01"
+  end: "2025-09-15"
+  db: data/okx_old.duckdb
+  out: data/replay.duckdb
+  workers: 6
+
+paper:
+  db: data/paper.duckdb
+  models_dir: data/models
+  window_days: 8
+  max_catchup_bars: 36
+  snapshot_every_bars: 3
+  max_sec: 75
+  random_prob: 0.0002
+  books:
+    A: {label: "10,000U 每筆 2% 1x", equity: 10000, size_frac: 0.02, lever: 1, max_open: 10}
+    B: {label: "仿你的習慣 20x", equity: 1300, notional: auto, lever: 20, max_open: 3}
+    C: {label: "只記報酬率", unit: true}
+  ml:
+    exit: 6h_sl2atr
+    stride: 24
+    train_days: 365
+    retrain_days: 7
+    top_quantile: 0.995
+    min_prob: 0.5
+  twin:
+    stride: 24
+  llm:
+    max_calls_per_day: 200
+    max_cost_usd_per_day: 1000.0
+    price_in_per_1k: 0.00015
+    price_out_per_1k: 0.0006
+    max_per_tick: 4
+    timeout_sec: 20
+
 charts:
   enabled: true
   max_charts: 300
