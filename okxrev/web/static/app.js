@@ -714,12 +714,27 @@ async function loadPositions(refresh) {
   try { r = await api(`/api/account/positions${refresh ? "?refresh=true" : ""}`); }
   catch (e) { $("#ac-cool").innerHTML = `<p class="muted">${esc(e.message)}</p>`; table($("#ac-pos"), [], []); posLoading = false; return; }
   posLoading = false;
-  if (!r.ok) { $("#ac-cool").innerHTML = `<p class="muted">${esc(r.message)}</p>`; table($("#ac-pos"), [], []); return; }
   const cd = r.cooldown;
-  $("#ac-cool").innerHTML = cd && cd.active
+  $("#ac-cool").innerHTML = !r.ok ? `<p class="muted">${esc(r.message)}</p>` : cd && cd.active
     ? `<p class="warn">冷卻中：上一筆 ${esc(cd.last_inst)} ${usd(cd.last_pnl)} USD，建議 ${utc(cd.until_ts)} UTC（${new Date(cd.until_ts).toLocaleTimeString()} 本地）之後再開新單</p>`
     : cd && cd.minutes ? `<p class="muted">冷卻：上一筆 ${esc(cd.last_inst)} ${usd(cd.last_pnl)}，已過建議冷卻時間</p>` : "";
   const P = (v) => (v == null ? "-" : Number(v).toPrecision(6));
+  const rb = r.running_bots || [];
+  $("#ac-run-bots-note").textContent = (r.running_bots_errors || []).length ? `部分查詢失敗：${r.running_bots_errors.join("、")}` : "";
+  table($("#ac-run-bots"), [
+    { t: "合約", k: "inst_id", cls: "l" }, { t: "類型", k: "type_label" },
+    { t: "方向", f: (x) => (x.direction ? `<span class="${x.direction === "short" ? "neg" : "pos"}">${SIDE[x.direction] || esc(x.direction)}</span> ${num(x.lever, 0)}x` : "-") },
+    { t: "投入", f: (x) => num(x.investment) },
+    { t: "總損益", f: (x) => `${usd(x.total_pnl)} <span class="muted">${pct(x.pnl_ratio, 1)}</span>` },
+    { t: "網格／浮動", f: (x) => (x.grid_profit == null ? "-" : `${usd(x.grid_profit)}／${usd(x.float_profit)}`) },
+    { t: "區間", f: (x) => (x.min_px ? `${P(x.min_px)} – ${P(x.max_px)}` : "-") },
+    { t: "現價", f: (x) => `${P(x.px_now)}${x.in_range ? ` <span class="badge ${x.in_range === "區間內" ? "ok" : "warn"}">${esc(x.in_range)}</span>` : ""}` },
+    { t: "持倉均價／張數", f: (x) => (x.pos_avg_px ? `${P(x.pos_avg_px)}／${fmtN(x.pos_size)}` : "-") },
+    { t: "強平（距離）", f: (x) => (x.liq_px ? `<span class="neg">${P(x.liq_px)}</span> <span class="muted">${pct(x.liq_dist, 0)}</span>` : "-") },
+    { t: "運行", f: (x) => (x.hours == null ? "-" : mins(x.hours * 60)) },
+  ], rb, { onClick: (x) => openKline(x.inst_id.endsWith("-SWAP") ? x.inst_id : `${x.inst_id}-SWAP`, x.start - 6 * 3600e3, Date.now(), [],
+    [x.min_px && { inst: x.inst_id, price: x.min_px, color: "#4aa3ff", title: "網格下緣" }, x.max_px && { inst: x.inst_id, price: x.max_px, color: "#4aa3ff", title: "網格上緣" },
+     x.pos_avg_px && { inst: x.inst_id, price: x.pos_avg_px, color: "#bbbbbb", title: "持倉均價" }, x.liq_px && { inst: x.inst_id, price: x.liq_px, color: "#ff00aa", title: "強平" }].filter(Boolean)) });
   table($("#ac-bot-pos"), [
     { t: "幣", k: "ccy", cls: "l" }, { t: "機器人", k: "bot" },
     { t: "數量", f: (x) => Number(x.qty).toPrecision(6) }, { t: "現價", f: (x) => P(x.px_now) },

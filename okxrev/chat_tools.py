@@ -459,15 +459,32 @@ class Toolbox:
         if not self.allow_private:
             raise ToolError("未授權讀取個人帳戶")
         b = self._json("bots.json") or {}
-        rows = b.get("bots", [])
-        if inst:
-            base = norm_inst(inst).split("-")[0]
-            rows = [x for x in rows if base in str(x.get("inst_id", ""))]
+        base = norm_inst(inst).split("-")[0] if inst else None
+        live_rows, live_err = self._running_bots()
+        if base:
+            live_rows = [x for x in live_rows if base in str(x.get("inst_id", ""))]
+        live_ids = {x.get("algo_id") for x in live_rows}
+        rows = [x for x in b.get("bots", []) if x.get("algo_id") not in live_ids and (not base or base in str(x.get("inst_id", "")))]
         keep = ["type_label", "inst_id", "direction", "lever", "investment", "start", "end", "hours", "state", "pnl", "grid_profit", "float_profit",
                 "unrealized", "min_px", "max_px", "mkt_move", "mkt_broke", "pre_ret_24h", "post_after_6h", "stop_reason"]
-        return {"n_total": b.get("n"), "pnl_total": _r(b.get("pnl"), 2), "unrealized_total": _r(b.get("unrealized"), 2),
+        return {"running_now_live": live_rows, "running_live_errors": live_err,
+                "running_note": "running_now_live 為剛向 OKX 即時查詢的運行中機器人（以此為準）；total_pnl 為 OKX 總損益（含手續費、資金費），"
+                                "float_profit 為網格浮動損益（含已部分平倉的價差），pos_upl 只是目前持倉相對持倉均價的未實現損益",
+                "history_synced_at": _t(int((self.cfg.paths.results / "bots.json").stat().st_mtime * 1000)) if (self.cfg.paths.results / "bots.json").exists() else None,
+                "n_total_history": b.get("n"), "pnl_total_history": _r(b.get("pnl"), 2),
                 "findings": b.get("findings", []), "by_direction": b.get("by_direction"),
-                "bots": [{k: (_t(x[k]) if k in ("start", "end") else _r(x.get(k), 4)) for k in keep if k in x} for x in rows][:30]}
+                "history_bots": [{k: (_t(x[k]) if k in ("start", "end") else _r(x.get(k), 4)) for k in keep if k in x} for x in rows][:30]}
+
+    def _running_bots(self) -> tuple[list[dict[str, Any]], list[str]]:
+        if not self.allow_live:
+            return [], ["即時資料已停用"]
+        from okxrev import live
+        try:
+            snap = live.running_bots(self.cfg, self.priv())
+        except Exception as e:
+            return [], [f"{type(e).__name__}: {str(e)[:120]}"]
+        rows = [{k: (_t(v) if k == "start" else v if isinstance(v, str) else _r(v, 6)) for k, v in x.items()} for x in snap.get("bots", [])]
+        return rows, snap.get("errors", [])
 
     def positions(self) -> dict[str, Any]:
         """Your current OKX positions (read-only key) with the exit plan: stop / take-profit / trailing levels,
@@ -481,7 +498,10 @@ class Toolbox:
         return {"ok": r.get("ok"), "message": r.get("message"),
                 "positions": [{k: (_t(p[k]) if k.endswith("_ts") else _r(p[k], 6) if not isinstance(p.get(k), (list, str)) else p[k]) for k in keep if k in p}
                               for p in r.get("positions", [])],
-                "bot_holdings": [_rec(h, 6) for h in r.get("bot_holdings", [])], "cooldown": r.get("cooldown")}
+                "bot_holdings": [_rec(h, 6) for h in r.get("bot_holdings", [])],
+                "running_bots": [{k: (_t(v) if k == "start" else v if isinstance(v, str) else _r(v, 6)) for k, v in x.items()} for x in r.get("running_bots", [])],
+                "cooldown": r.get("cooldown"),
+                "note": "positions 只含手動持倉；網格／DCA 的倉位在 running_bots（由機器人管理）"}
 
     def paper_trading(self, inst: str | None = None, source: str = "live") -> dict[str, Any]:
         """Paper-trading leaderboard (live forward test or the 2024-25 blind test) and, for a coin, its open/closed
@@ -875,7 +895,8 @@ TOOLS: dict[str, dict[str, Any]] = {
     "my_trades": {"desc": "使用者的交易紀錄與統計（手動／機器人／跟單），可依合約、來源、起始日期篩選；含 MAE/MFE、出場效率",
                   "params": _p({"inst": INST, "source": {"type": "string", "enum": ["manual", "bot", "copy"]}, "since": TIME, "limit": I})},
     "trading_review": {"desc": "使用者手動交易的診斷：操作問題（依影響排序）、優勢、反事實出場試算、最佳化出場規則、冷卻建議", "params": _p({})},
-    "bots": {"desc": "使用者的機器人（網格、DCA、智能組合）逐一結果、當時行情、歸納發現，可指定合約", "params": _p({"inst": INST})},
+    "bots": {"desc": "使用者的機器人：運行中的網格／DCA 即時狀態（OKX 即時查詢：損益、網格收益、浮動損益、區間、持倉均價、張數、強平價、保證金率），以及歷史機器人逐一結果與歸納發現，可指定合約",
+             "params": _p({"inst": INST})},
     "positions": {"desc": "使用者目前在 OKX 的真實持倉（唯讀）與出場計畫：止損/止盈/移動停利價、時間停損、強平價、機器人持幣、冷卻狀態", "params": _p({})},
     "paper_trading": {"desc": "紙上交易排行（source=live 即時；blind 為 2024-25 舊資料盲測），給 inst 時附上該幣的模擬單",
                       "params": _p({"inst": INST, "source": {"type": "string", "enum": ["live", "blind"]}})},

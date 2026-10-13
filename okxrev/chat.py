@@ -54,7 +54,9 @@ OKX USDT 永續合約的 5 分 K 歷史（約 2024-09 起）、即時行情、�
 8. 這些工具全部唯讀；你不能下單或修改任何設定。
 9. 同一個數字若不同工具給出不同值（例如即時 vs 資料庫快照），說明差異來源，以即時為準。
 10. 分析單一事件：先 analyze_event，再 find_similar_events 看歷史類似情況，必要時 test_template 調整條件；說明找參數期與驗證期的差別，
-    提醒調條件次數越多越容易過度擬合；盲測只能由使用者在介面上按。"""
+    提醒調條件次數越多越容易過度擬合；盲測只能由使用者在介面上按。
+11. 機器人（網格、DCA）的現況以系統訊息裡的「運行中的機器人」和 bots 工具的 running_now_live 為準（即時查詢）；
+    歷史同步資料可能落後幾小時。網格的總損益 = 網格收益 + 浮動損益；持倉的未實現損益（pos_upl）只看目前持倉相對均價，兩者不同。"""
 
 
 def settings(cfg: Config) -> dict[str, Any]:
@@ -188,6 +190,26 @@ def _wire(m: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in m.items() if not k.startswith("_")}
 
 
+def live_context(cfg: Config, box: Toolbox) -> str:
+    """Running bots right now (OKX, cached 60s); empty when there is no key, live data is off, or the call fails."""
+    if not box.allow_private or not box.allow_live:
+        return ""
+    from okxrev import live
+    from okxrev.config import load_credentials
+    if load_credentials(cfg.paths.root) is None:
+        return ""
+    try:
+        snap = live.running_bots(cfg, box.priv())
+    except Exception as e:
+        log.info("live bot context skipped: %s", e)
+        return ""
+    brief = live.bots_brief(snap)
+    t = ms_to_str(snap.get("ts"), "%H:%M:%S")
+    if not brief:
+        return f"\n\n使用者目前沒有運行中的網格／DCA 機器人（OKX 即時查詢 {t} UTC）。"
+    return (f"\n\n使用者目前運行中的機器人（OKX 即時查詢 {t} UTC，以此為準；詳細數字可呼叫 bots 工具）：\n{brief}")
+
+
 def run_turn(cfg: Config, cid: str | None, user_text: str | None, inst: str | None = None, model: str | None = None,
              cont: bool = False, session: Any = None, toolbox: Toolbox | None = None) -> Iterator[dict[str, Any]]:
     """Generator of UI events: conv, text, tool_start, tool_end, notice, done, error."""
@@ -210,6 +232,7 @@ def run_turn(cfg: Config, cid: str | None, user_text: str | None, inst: str | No
         sys_msg = SYSTEM + f"\n\n現在時間：{ms_to_str(db.now_ms())} UTC。"
         if inst:
             sys_msg += f"\n使用者目前選擇討論的合約：{inst}（問題沒指明合約時就是指它）。"
+        sys_msg += live_context(cfg, box)
         msgs = [{"role": "system", "content": sys_msg}] + [_wire(m) for m in hist[-int(c["history_messages"]):]]
         while msgs[1:] and msgs[1]["role"] == "tool":
             msgs.pop(1)

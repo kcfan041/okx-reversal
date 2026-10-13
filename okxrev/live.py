@@ -224,7 +224,12 @@ def live_plan(cfg: Config, client: OkxClient | None = None, now_ms: int | None =
     now_ms = now_ms or int(time.time() * 1000)
     plan = load_plan(cfg)
     if not plan or not plan.get("groups"):
-        return {"ok": False, "message": "尚未執行出場最佳化（python -m okxrev.exits 或按「同步並分析」）", "positions": []}
+        try:
+            run = running_bots(cfg, client, now_ms=now_ms)
+        except Exception as e:
+            run = {"bots": [], "errors": [type(e).__name__]}
+        return {"ok": False, "message": "尚未執行出場最佳化（python -m okxrev.exits 或按「同步並分析」）", "positions": [],
+                "running_bots": run.get("bots", []), "running_bots_errors": run.get("errors", [])}
     own = client is None
     client = client or account.make_client(cfg)
     try:
@@ -243,10 +248,16 @@ def live_plan(cfg: Config, client: OkxClient | None = None, now_ms: int | None =
         positions += parse_spot(bal, fills)
         res = [plan_for(p, plan, client, now_ms) for p in positions]
         bot_hold = bot_holdings(cfg, bal)
+        try:
+            run = running_bots(cfg, client, now_ms=now_ms)
+        except Exception as e:
+            log.warning("running bots failed: %s", e)
+            run = {"bots": [], "errors": [type(e).__name__]}
     finally:
         if own:
             client.close()
-    return {"ok": True, "now": now_ms, "positions": res, "bot_holdings": bot_hold, "cooldown": cooldown_status(cfg, plan, now_ms),
+    return {"ok": True, "now": now_ms, "positions": res, "bot_holdings": bot_hold, "running_bots": run.get("bots", []),
+            "running_bots_errors": run.get("errors", []), "cooldown": cooldown_status(cfg, plan, now_ms),
             "plan_groups": {k: v["recommended"]["text"] for k, v in plan["groups"].items()}}
 
 
@@ -280,6 +291,110 @@ def bot_holdings(cfg: Config, balance: list[dict[str, Any]]) -> list[dict[str, A
                         "unrealized": (px - avg) * stgy if avg else None, "ret": px / avg - 1 if avg else None,
                         "bot": "智能組合" if c else "機器人", "since": c.get("start")})
     return sorted(out, key=lambda x: -x["value_usd"])
+
+
+GRID_PENDING = "/api/v5/tradingBot/grid/orders-algo-pending"
+GRID_POSITIONS = "/api/v5/tradingBot/grid/positions"
+DCA_ONGOING = "/api/v5/tradingBot/dca/ongoing-list"
+BOT_TYPE_LABEL = {"contract_grid": "合約網格", "grid": "現貨網格", "contract_dca": "合約 DCA", "spot_dca": "現貨 DCA"}
+_bots_cache: dict[str, Any] = {"t": 0.0, "data": None}
+BOTS_TTL = 60.0
+
+
+def _grid_row(d: dict[str, Any], pos: dict[str, Any] | None, now_ms: int) -> dict[str, Any]:
+    t = d.get("algoOrdType")
+    lo, hi = _f(d.get("minPx")), _f(d.get("maxPx"))
+    p = pos or {}
+    px = _f(p.get("last")) or _f(p.get("markPx"))
+    liq = _f(p.get("liqPx")) or _f(d.get("liqPx"))
+    side = d.get("direction") or ("long" if t == "grid" else None)
+    c_time = int(d.get("cTime") or 0) or None
+    row = {
+        "algo_id": d.get("algoId"), "type": t, "type_label": BOT_TYPE_LABEL.get(t, t), "inst_id": d.get("instId"), "direction": side,
+        "lever": _f(d.get("lever")) or (_f(d.get("actualLever")) if t == "contract_grid" else 1.0), "investment": _f(d.get("investment")),
+        "start": c_time, "hours": (now_ms - c_time) / 3_600_000 if c_time else None,
+        "total_pnl": _f(d.get("totalPnl")), "grid_profit": _f(d.get("gridProfit")), "float_profit": _f(d.get("floatProfit")),
+        "pnl_ratio": _f(d.get("pnlRatio")), "fee": _f(d.get("fee")), "funding": _f(d.get("fundingFee")),
+        "min_px": lo, "max_px": hi, "grid_num": int(d.get("gridNum") or 0) or None, "arbitrage_num": int(d.get("arbitrageNum") or 0) or None,
+        "tp_px": _f(d.get("tpTriggerPx")), "sl_px": _f(d.get("slTriggerPx")), "tp_ratio": _f(d.get("tpRatio")), "sl_ratio": _f(d.get("slRatio")),
+        "pos_avg_px": _f(p.get("avgPx")), "pos_size": _f(p.get("pos")), "pos_notional": _f(p.get("notionalUsd")), "pos_upl": _f(p.get("upl")),
+        "px_now": px, "liq_px": liq, "mgn_ratio": _f(p.get("mgnRatio")), "mgn_mode": p.get("mgnMode"),
+    }
+    if px and liq:
+        row["liq_dist"] = abs(1 - liq / px)
+    if px and lo and hi:
+        row["in_range"] = "區間內" if lo <= px <= hi else ("跌破下緣" if px < lo else "突破上緣")
+    return row
+
+
+def running_bots(cfg: Config, client: OkxClient | None = None, refresh: bool = False, now_ms: int | None = None) -> dict[str, Any]:
+    """Live snapshot of running grid / DCA bots straight from OKX (read-only), cached for BOTS_TTL seconds."""
+    if not refresh and _bots_cache["data"] is not None and time.monotonic() - _bots_cache["t"] < BOTS_TTL:
+        return _bots_cache["data"]
+    now_ms = now_ms or int(time.time() * 1000)
+    own = client is None
+    client = client or account.make_client(cfg)
+    bots_out: list[dict[str, Any]] = []
+    errors: list[str] = []
+    try:
+        for t in ("contract_grid", "grid"):
+            try:
+                rows = client.get_private(GRID_PENDING, {"algoOrdType": t})
+            except Exception as e:
+                errors.append(f"{BOT_TYPE_LABEL[t]}：{type(e).__name__}")
+                continue
+            for d in rows:
+                pos = None
+                if t == "contract_grid":
+                    try:
+                        pp = client.get_private(GRID_POSITIONS, {"algoOrdType": t, "algoId": d["algoId"]})
+                        pos = next((x for x in pp if (_f(x.get("pos")) or 0) != 0), pp[0] if pp else None)
+                    except Exception as e:
+                        errors.append(f"網格持倉 {d.get('instId')}：{type(e).__name__}")
+                bots_out.append(_grid_row(d, pos, now_ms))
+        for t in ("contract_dca", "spot_dca"):
+            try:
+                rows = client.get_private(DCA_ONGOING, {"algoOrdType": t})
+            except Exception as e:
+                errors.append(f"{BOT_TYPE_LABEL[t]}：{type(e).__name__}")
+                continue
+            for d in rows:
+                c_time = int(d.get("cTime") or 0) or None
+                bots_out.append({"algo_id": d.get("algoId"), "type": t, "type_label": BOT_TYPE_LABEL[t], "inst_id": d.get("instId"),
+                                 "direction": d.get("direction") or ("long" if t == "spot_dca" else None), "lever": _f(d.get("lever")) or 1.0,
+                                 "investment": _f(d.get("investmentAmt")) or _f(d.get("investment")), "start": c_time,
+                                 "hours": (now_ms - c_time) / 3_600_000 if c_time else None, "total_pnl": _f(d.get("totalPnl")),
+                                 "pnl_ratio": _f(d.get("pnlRatio")), "pos_avg_px": _f(d.get("avgPx")), "px_now": _f(d.get("last")) or _f(d.get("markPx"))})
+    finally:
+        if own:
+            client.close()
+    data = {"ts": now_ms, "bots": bots_out, "errors": errors}
+    _bots_cache.update(t=time.monotonic(), data=data)
+    return data
+
+
+def bots_brief(snap: dict[str, Any]) -> str:
+    """One line per running bot, for the chat system prompt."""
+    lines = []
+    for b in snap.get("bots", []):
+        p = lambda v, d=2: "-" if v is None else f"{v:+.{d}f}"
+        px = lambda v: "-" if v is None else f"{v:.6g}"
+        s = (f"{b['inst_id']} {b['type_label']} {'做多' if b.get('direction') == 'long' else '做空' if b.get('direction') == 'short' else b.get('direction') or ''}"
+             f" {b.get('lever') or 1:g}x，投入 {b.get('investment') or 0:g}，總損益 {p(b.get('total_pnl'))}")
+        if b.get("grid_profit") is not None:
+            s += f"（網格 {p(b.get('grid_profit'))}／浮動 {p(b.get('float_profit'))}）"
+        if b.get("min_px"):
+            s += f"，區間 {px(b['min_px'])}–{px(b['max_px'])}"
+        if b.get("pos_avg_px"):
+            s += f"，持倉均價 {px(b['pos_avg_px'])} {b.get('pos_size') or ''}張"
+        if b.get("liq_px"):
+            s += f"，強平 {px(b['liq_px'])}" + (f"（現價再{'跌' if b.get('direction') != 'short' else '漲'} {b['liq_dist']:.0%} 觸發）" if b.get("liq_dist") is not None else "")
+        if b.get("px_now"):
+            s += f"，現價 {px(b['px_now'])}" + (f"（{b['in_range']}）" if b.get("in_range") else "")
+        if b.get("hours") is not None:
+            s += f"，運行 {b['hours']:.1f} 小時"
+        lines.append("- " + s)
+    return "\n".join(lines)
 
 
 def print_live(res: dict[str, Any]) -> None:
