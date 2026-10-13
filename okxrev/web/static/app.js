@@ -38,7 +38,13 @@ function ago(ms) {
   return `${(m / 1440).toFixed(1)} 天前`;
 }
 function table(el, cols, rows, opts = {}) {
-  const head = `<thead><tr>${cols.map((c, i) => `<th class="${c.cls || ""}" data-i="${i}">${esc(c.t)}</th>`).join("")}</tr></thead>`;
+  el.classList.toggle("sortable", !!opts.sortable);
+  const sortCls = (c) => {
+    if (!opts.sortable || !(c.sk || c.k)) return "";
+    if (el.dataset.sk !== (c.sk || c.k)) return " can-sort";
+    return el.dataset.sd === "1" ? " can-sort sorted-asc" : " can-sort sorted-desc";
+  };
+  const head = `<thead><tr>${cols.map((c, i) => `<th class="${c.cls || ""}${sortCls(c)}" data-i="${i}">${esc(c.t)}</th>`).join("")}</tr></thead>`;
   const body = rows.map((r, ri) => `<tr data-ri="${ri}">${cols.map((c) => `<td class="${c.cls || ""}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join("")}</tr>`).join("");
   el.innerHTML = head + `<tbody>${body || `<tr><td colspan="${cols.length}" class="muted l">（無資料）</td></tr>`}</tbody>`;
   if (opts.sortable) {
@@ -69,10 +75,18 @@ function table(el, cols, rows, opts = {}) {
 let currentTab = "dash";
 document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 function showTab(t) {
+  if (!document.getElementById(`tab-${t}`)) t = "dash";
   currentTab = t;
-  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
+  document.querySelectorAll("nav button").forEach((b) => {
+    const on = b.dataset.tab === t;
+    b.classList.toggle("active", on);
+    if (on) { b.setAttribute("aria-current", "page"); $("#page-title").textContent = b.textContent; }
+    else b.removeAttribute("aria-current");
+  });
   document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("active", s.id === `tab-${t}`));
-  location.hash = t;
+  if (location.hash.slice(1) !== t) location.hash = t;
+  window.scrollTo({ top: 0 });
+  if (t === "lab") labSteps();
   if (t === "dash") loadDash();
   if (t === "ctrl") loadLog();
   if (t === "bt") { loadResults(); pollJob(); }
@@ -151,7 +165,7 @@ async function loadTaskBox() {
   const html = t.registered
     ? `<dl class="kv"><div>${state} ${running}</div>
         <div>工作排程器狀態：${esc(t.state)}</div>
-        <div>上次觸發：${utc(Date.parse(t.last_run))} UTC（${esc(TASK_RESULT[t.last_result] ?? t.last_result)}）</div>
+        <div>上次觸���：${utc(Date.parse(t.last_run))} UTC（${esc(TASK_RESULT[t.last_result] ?? t.last_result)}）</div>
         <div>下次觸發：${t.next_run ? utc(Date.parse(t.next_run)) + " UTC" : "-"}</div></dl>`
     : `<div>${state} ${running}</div><p class="warn">找不到排程：${esc(t.error || "")}</p>`;
   $("#dash-task").innerHTML = html;
@@ -300,7 +314,7 @@ async function loadResults() {
     { t: "紅K ≤", f: (r) => pct(r.red_ret_max, 0) },
     { t: "量能 ≥", f: (r) => `${r.red_vol_ratio_min}×` },
     { t: "n", k: "n" }, { t: "合約", k: "n_insts" }, { t: "天數", k: "n_days" },
-    { t: "24h 平均", f: (r) => pctC(r.fwd_ret_24h_mean) },
+    { t: "24h 平���", f: (r) => pctC(r.fwd_ret_24h_mean) },
     { t: "24h 中位", f: (r) => pctC(r.fwd_ret_24h_median) },
     { t: "下跌率", f: (r) => pct(r.bear_rate_24h) },
     { t: "MAE", f: (r) => pct(r.mae_mean) },
@@ -1881,5 +1895,62 @@ setInterval(() => {
   if (currentTab === "ht") pollHeatJob();
   if (currentTab === "lab") labPollJob();
 }, 3000);
+
+/* ---------------- shell: jobs indicator, sub-nav, lab steps ---------------- */
+const GLOBAL_JOBS = [
+  { url: "/api/backtest/job", label: "回測", tab: "bt" },
+  { url: "/api/account/job", label: "戰績分析", tab: "ac" },
+  { url: "/api/discover/job", label: "進場探索", tab: "dc" },
+  { url: "/api/paper/jobs", label: "AI 模擬", tab: "pp", multi: true },
+  { url: "/api/heat/job", label: "過熱驗證", tab: "ht" },
+  { url: "/api/lab/job", label: "實驗室", tab: "lab" },
+];
+async function pollGlobalJobs() {
+  const res = await Promise.all(GLOBAL_JOBS.map((g) => api(g.url).catch(() => null)));
+  const running = GLOBAL_JOBS.filter((g, i) => {
+    const j = res[i];
+    if (!j) return false;
+    return g.multi ? Object.values(j).some((x) => x && x.running) : j.running;
+  });
+  $("#jobs").innerHTML = running
+    .map((g) => `<button class="jobpill" data-go="${g.tab}" title="前往 ${esc(g.label)}"><span class="pulse" aria-hidden="true"></span>${esc(g.label)}執行中</button>`)
+    .join("");
+}
+$("#jobs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-go]");
+  if (b) showTab(b.dataset.go);
+});
+
+document.querySelectorAll(".subnav [data-jump]").forEach((b) => b.addEventListener("click", () => {
+  document.getElementById(b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}));
+
+function labSteps() {
+  const visible = (id) => { const el = document.getElementById(id); return el && el.style.display !== "none"; };
+  const hasRows = (id) => { const el = document.getElementById(id); return el && el.querySelector("tbody tr[data-ri]"); };
+  const done = {
+    1: !!hasRows("lab-events") || !!hasRows("lab-recent"),
+    2: visible("lab-event-panel"),
+    3: !!hasRows("lab-tpl") || visible("lab-tpl-panel"),
+    4: !!hasRows("lab-sim"),
+    5: visible("lab-res-panel"),
+    6: !!hasRows("lab-rules"),
+  };
+  let current = 6;
+  for (let i = 1; i <= 6; i++) if (!done[i]) { current = i; break; }
+  document.querySelectorAll("#lab-steps li").forEach((li) => {
+    const n = +li.dataset.step;
+    li.classList.toggle("done", !!done[n]);
+    li.classList.toggle("current", n === current);
+  });
+}
+
+window.addEventListener("hashchange", () => {
+  const t = location.hash.slice(1);
+  if (t && t !== currentTab) showTab(t);
+});
+setInterval(() => { if (!document.hidden) pollGlobalJobs(); }, 5000);
+setInterval(() => { if (!document.hidden && currentTab === "lab") labSteps(); }, 2000);
+pollGlobalJobs();
 
 showTab((location.hash || "#dash").slice(1) || "dash");

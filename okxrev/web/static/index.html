@@ -7,24 +7,41 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <h1>okx-reversal</h1>
-  <nav>
-    <button data-tab="dash" class="active">儀表板</button>
-    <button data-tab="ctrl">同步控制</button>
-    <button data-tab="bt">回測</button>
-    <button data-tab="ev">事件</button>
-    <button data-tab="kl">K 線</button>
-    <button data-tab="ac">戰績</button>
-    <button data-tab="dc">進場探索</button>
-    <button data-tab="pp">AI 模擬</button>
-    <button data-tab="ht">過熱監控</button>
-    <button data-tab="lab">事件實驗室</button>
-    <button data-tab="ai">AI 討論</button>
+<aside class="sidebar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>okx-reversal</div>
+  <nav aria-label="主選單">
+    <div class="nav-group">
+      <div class="nav-label">資料</div>
+      <button data-tab="dash" class="active">儀表板</button>
+      <button data-tab="ctrl">同步控制</button>
+      <button data-tab="kl">K 線</button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">研究</div>
+      <button data-tab="bt">回測</button>
+      <button data-tab="ev">事件</button>
+      <button data-tab="dc">進場探索</button>
+      <button data-tab="lab">事件實驗室</button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">交易</div>
+      <button data-tab="ac">戰績</button>
+      <button data-tab="pp">AI 模擬</button>
+      <button data-tab="ht">過熱監控</button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">助理</div>
+      <button data-tab="ai">AI 討論</button>
+    </div>
   </nav>
+</aside>
+<div class="content">
+<header class="topbar">
+  <h1 id="page-title">儀表板</h1>
+  <div id="jobs" class="jobs" aria-live="polite"></div>
   <div id="hdr-state"></div>
 </header>
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <main>
 <!-- 儀表板 -->
@@ -69,7 +86,7 @@
       <button id="btn-resume">恢復排程</button>
       <span id="ctrl-state"></span>
     </div>
-    <p class="muted">暫停是在 <code>data/PAUSE</code> 建立旗標檔，排程仍會每 5 分鐘觸發，但會立即結束。暫停中按「立即執行」仍會強制跑一次。</p>
+    <details class="hint"><summary>暫停是怎麼運作的？</summary>暫停是在 <code>data/PAUSE</code> 建立旗標檔，排程仍會每 5 分鐘觸發，但會立即結束。暫停中按「立即執行」仍會強制跑一次。</details>
     <div class="row">
       <input id="only-insts" placeholder="只同步指定合約，以空白或逗號分隔，例如 BTC-USDT-SWAP PEPE-USDT-SWAP" style="flex:1">
       <button id="btn-only">執行</button>
@@ -191,6 +208,17 @@
       <button id="btn-ac-filter">篩選</button>
     </div>
   </div>
+  <div class="subnav" role="navigation" aria-label="戰績頁區塊">
+    <button data-jump="ac-sec-overview">總覽</button>
+    <button data-jump="ac-sec-pos">持倉</button>
+    <button data-jump="ac-sec-exit">出場建議</button>
+    <button data-jump="ac-sec-bots">機器人</button>
+    <button data-jump="ac-sec-issues">操作問題</button>
+    <button data-jump="ac-sec-rep">可複製性</button>
+    <button data-jump="ac-sec-stats">統計</button>
+    <button data-jump="ac-sec-trades">逐筆明細</button>
+  </div>
+  <div id="ac-sec-overview" class="anchor"></div>
   <div class="cards" id="ac-cards"></div>
   <div class="cards" id="ac-src-cards"></div>
   <div class="panel">
@@ -198,18 +226,18 @@
     <div id="ac-equity" class="chart small" style="height:240px"></div>
     <div id="ac-daily" class="chart small"></div>
   </div>
-  <div class="panel">
+  <div class="panel" id="ac-sec-pos">
     <h2>目前持倉 <small class="muted">（只讀取，不下單；每 15 秒更新）</small> <button id="btn-ac-pos" class="small">立即更新</button></h2>
     <div id="ac-cool"></div>
     <div class="scroll"><table id="ac-pos" class="clickable"></table></div>
     <h3>機器人持有中 <small class="muted">（由機器人管理，不給止盈止損建議；損益為未實現）</small></h3>
     <div class="scroll"><table id="ac-bot-pos"></table></div>
   </div>
-  <div class="panel">
+  <div class="panel" id="ac-sec-exit">
     <h2>出場規則建議 <small class="muted">（依你歷史交易模擬；★ 為兩段時間互相驗證較穩的單位）</small></h2>
     <div id="ac-exit-plan"></div>
   </div>
-  <div class="panel">
+  <div class="panel" id="ac-sec-bots">
     <h2>機器人 <small class="muted">（網格／DCA 等；與手動交易分開分析）</small></h2>
     <div id="ac-bot-find"></div>
     <div id="ac-portfolio"></div>
@@ -220,7 +248,7 @@
     </div>
     <div id="ac-copy" class="muted"></div>
   </div>
-  <div class="panel">
+  <div class="panel" id="ac-sec-issues">
     <h2>操作問題 <small class="muted">（只看手動交易）</small> <small class="muted">（依估計影響排序；分析時間 <span id="ac-rv-time">-</span>）</small></h2>
     <div id="ac-issues"></div>
   </div>
@@ -234,12 +262,12 @@
       <div class="scroll"><table id="ac-good"></table></div>
     </div>
   </div>
-  <div class="panel">
+  <div class="panel" id="ac-sec-rep">
     <h2>可複製性 <small class="muted">（把獲利情境套到全市場合約，比較你交易時段以外的表現）</small></h2>
     <div id="ac-rep-note" class="muted"></div>
     <div class="scroll"><table id="ac-rep-t"></table></div>
   </div>
-  <div class="grid2">
+  <div class="grid2" id="ac-sec-stats">
     <div class="panel"><h2>每月</h2><div class="scroll"><table id="ac-month"></table></div></div>
     <div class="panel"><h2>多空 / 商品</h2><table id="ac-side-t"></table><h3>持倉時間</h3><table id="ac-hold"></table></div>
   </div>
@@ -247,7 +275,7 @@
     <div class="panel"><h2>幣種 <small class="muted">（最差與最好）</small></h2><div class="scroll"><table id="ac-inst-t"></table></div></div>
     <div class="panel"><h2>出場效率</h2><div id="ac-exit"></div><h3>槓桿</h3><table id="ac-lever"></table></div>
   </div>
-  <div class="panel">
+  <div class="panel" id="ac-sec-trades">
     <h2>逐筆明細 <small id="ac-count" class="muted"></small></h2>
     <div class="scroll tall"><table id="ac-trades" class="clickable"></table></div>
   </div>
@@ -302,7 +330,7 @@
       <button id="btn-pp-export">匯出資料（Parquet）</button>
       <span id="pp-meta" class="muted"></span>
     </div>
-    <p class="muted">每次 5 分鐘同步完成後自動跑一輪。訊號只用已收盤的 K 線，模擬成交用下一根 K 線的開盤價；不會對 OKX 下任何單。</p>
+    <details class="hint"><summary>模擬怎麼運作？</summary>每次 5 分鐘同步完成後自動跑一輪。訊號只用已收盤的 K 線，模擬成交用下一根 K 線的開盤價；不會對 OKX 下任何單。</details>
     <pre id="pp-log" class="log short" style="display:none"></pre>
   </div>
   <div class="panel">
@@ -322,7 +350,7 @@
       <select id="pp-book"><option value="C">C：只記報酬率</option><option value="A">A：10,000U 每筆 2% 1x</option><option value="B">B：仿你的習慣 20x</option></select>
     </h2>
     <div class="scroll"><table id="pp-board" class="clickable"></table></div>
-    <p class="muted">「勝過隨機」= 以每日平均報酬比較同期隨機對照組，t &gt; 2 且至少 20 個交易日才標示顯著。</p>
+    <details class="hint"><summary>「勝過隨機」是什麼意思？</summary>以每日平均報酬比較同期隨機對照組，t &gt; 2 且至少 20 個交易日才標示顯著。</details>
   </div>
   <div class="panel">
     <h2>權益曲線 <small class="muted">（帳本 A/B；含未平倉浮動）</small></h2>
@@ -347,7 +375,7 @@
       <button id="btn-ht-watch">儲存</button>
       <span id="ht-meta" class="muted"></span>
     </div>
-    <p class="muted">過熱分數 0～100：每項指標換算成「這個幣自己過去 30 天的百分位」，再平均成五大類（情緒與爆倉類尚無歷史，只供參考、不計入分數）。每次紙上交易那一輪更新；只提醒，不下單。</p>
+    <details class="hint"><summary>過熱分數怎麼算？</summary>過熱分數 0～100：每項指標換算成「這個幣自己過去 30 天的百分位」，再平均成五大類（情緒與爆倉類尚無歷史，只供參考、不計入分數）。每次紙上交易那一輪更新；只提醒，不下單。</details>
   </div>
   <div class="grid2">
     <div class="panel"><h2>提醒 <small class="muted">（24 小時內）</small></h2><div class="scroll"><table id="ht-alerts" class="clickable"></table></div></div>
@@ -382,6 +410,14 @@
 
 <!-- 事件實驗室 -->
 <section id="tab-lab" class="tab">
+  <ol class="steps" id="lab-steps" aria-label="事件實驗室流程">
+    <li data-step="1"><span>1</span>事件清單</li>
+    <li data-step="2"><span>2</span>細看事件</li>
+    <li data-step="3"><span>3</span>樣板</li>
+    <li data-step="4"><span>4</span>找類似</li>
+    <li data-step="5"><span>5</span>結果</li>
+    <li data-step="6"><span>6</span>存成規則</li>
+  </ol>
   <div class="panel">
     <div class="row">
       <label>合約 <input id="lab-inst" list="kl-insts" placeholder="例如 CT" style="width:170px"></label>
@@ -441,6 +477,17 @@
     <div id="lab-tpl-desc" class="muted"></div>
   </div>
 
+  <div class="panel" id="lab-sim-panel">
+    <h2>④ 找類似事件 <small class="muted">（全市場 5 分 K → 前 N 筆抓 1m 確認；不含盲測期）</small></h2>
+    <div class="row">
+      <label>1m 確認筆數 <input id="lab-confirm" type="number" value="200" min="0" max="300" style="width:70px"></label>
+      <button id="btn-lab-similar">找類似事件（背景執行）</button>
+      <span id="lab-sim-meta" class="muted"></span>
+    </div>
+    <div class="scroll"><table id="lab-sim-sum"></table></div>
+    <div class="scroll" style="max-height:360px"><table id="lab-sim" class="clickable"></table></div>
+  </div>
+
   <div class="panel" id="lab-res-panel" style="display:none">
     <h2>⑤ 結果 <small id="lab-res-meta" class="muted"></small></h2>
     <div class="row">
@@ -461,17 +508,6 @@
       <select id="lab-rule-exit"></select>
       <button id="btn-lab-save" class="primary">存成規則（加入紙上交易＋即時提醒）</button>
     </div>
-  </div>
-
-  <div class="panel" id="lab-sim-panel">
-    <h2>④ 找類似事件 <small class="muted">（全市場 5 分 K → 前 N 筆抓 1m 確認；不含盲測期）</small></h2>
-    <div class="row">
-      <label>1m 確認筆數 <input id="lab-confirm" type="number" value="200" min="0" max="300" style="width:70px"></label>
-      <button id="btn-lab-similar">找類似事件（背景執行）</button>
-      <span id="lab-sim-meta" class="muted"></span>
-    </div>
-    <div class="scroll"><table id="lab-sim-sum"></table></div>
-    <div class="scroll" style="max-height:360px"><table id="lab-sim" class="clickable"></table></div>
   </div>
 
   <div class="panel">
@@ -502,11 +538,12 @@
           <button id="btn-ai-stop">停止</button>
         </div>
       </div>
-      <p class="muted">點回答中的時間開 K 線；Shift+點送到事件實驗室。AI 只能使用唯讀工具（不能下單或改設定）。回答內容會送到你在 .env 設定的 LLM 服務（9router）。不構成投資建議。</p>
+      <details class="hint"><summary>使用說明與隱私</summary>點回答中的時間開 K 線；Shift+點送到事件實驗室。AI 只能使用唯讀工具（不能下單或改設定）。回答內容會送到你在 .env 設定的 LLM 服務（9router）。不構成投資建議。</details>
     </div>
   </div>
 </section>
 </main>
+</div>
 
 <script src="/static/vendor/lightweight-charts.js"></script>
 <script src="/static/app.js"></script>
