@@ -655,8 +655,119 @@ def leaderboard(con: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
             row["vs_random"] = {"diff": float(diff), "t": float(diff / se) if se and np.isfinite(se) and se > 0 else None,
                                 "significant": bool(se and np.isfinite(se) and se > 0 and diff / se > 2 and len(a) >= 20)}
         out.append(row)
+    pc = pos[pos["book"] == "C"] if len(pos) else pos
+    diag = diagnostics(pc)
+    for row in out:
+        if row["trader_id"] in diag:
+            row["diag"] = diag[row["trader_id"]]
     out.sort(key=lambda r: -(r["C"].get("day_mean") or -9) if r["C"].get("n") else 9)
     return out
+
+
+MIN_SAME_DAY_RANDOM = 3
+OVERLAP_MIN = 0.5
+GROUP_MIN = 0.8
+
+
+def diagnostics(pos: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    """Per trader (closed unit-book positions):
+    - concentration: trades per entry day -> effective number of days ((sum w)^2 / sum w^2), busiest day's share of
+      trades, share of total return from the 3 best days;
+    - same-day random: each trade minus the mean of random-control trades of the same side and exit entered on the
+      same UTC day (falls back to the same side, any exit), aggregated per day -> mean excess and t over days;
+    - overlap: the other trader sharing the largest fraction of its entries (same coin, same signal hour), and a
+      group label for traders whose entries are >= 80% shared both ways (effectively one signal)."""
+    if pos is None or not len(pos):
+        return {}
+    p = pos[["trader_id", "inst_id", "side", "entry_ts", "signal_ts", "ret_net"]].copy()
+    p = p[p["entry_ts"].notna() & p["ret_net"].notna()]
+    if p.empty:
+        return {}
+    p["day"] = p["entry_ts"].astype(np.int64) // DAY
+    rnd = p[p["trader_id"].str.startswith("random")].copy()
+    rnd["exit"] = rnd["trader_id"].str.extract(r"^random_(?:long|short)_(.+)$")[0]
+    key_exit = rnd.groupby(["side", "exit", "day"])["ret_net"].agg(["mean", "count"])
+    key_side = rnd.groupby(["side", "day"])["ret_net"].agg(["mean", "count"])
+    exits = {}
+    out: dict[str, dict[str, Any]] = {}
+    sets: dict[str, set[tuple[str, int]]] = {}
+    for t, g in p.groupby("trader_id"):
+        sets[t] = set(zip(g["inst_id"], (g["signal_ts"].fillna(g["entry_ts"]).astype(np.int64) // 3_600_000)))
+    for t, g in p.groupby("trader_id"):
+        if t.startswith("random"):
+            continue
+        d: dict[str, Any] = {}
+        w = g.groupby("day").size().to_numpy(float)
+        d["n_days"] = int(len(w))
+        d["eff_days"] = float(w.sum() ** 2 / (w ** 2).sum())
+        d["max_day_share"] = float(w.max() / w.sum())
+        dr = g.groupby("day")["ret_net"].sum()
+        tot = float(dr.sum())
+        d["top3_days_ret_share"] = float(dr.nlargest(3).sum() / tot) if tot > 0 else None
+        base = pd.Series(np.nan, index=g.index)
+        if not rnd.empty:
+            for ex in _exit_candidates(t, exits):
+                k = pd.MultiIndex.from_arrays([g["side"], pd.Series(ex, index=g.index), g["day"]])
+                m = key_exit.reindex(k)
+                v = np.where(m["count"].to_numpy(float) >= MIN_SAME_DAY_RANDOM, m["mean"].to_numpy(float), np.nan)
+                base = base.fillna(pd.Series(v, index=g.index))
+            k2 = pd.MultiIndex.from_arrays([g["side"], g["day"]])
+            m2 = key_side.reindex(k2)
+            v2 = np.where(m2["count"].to_numpy(float) >= MIN_SAME_DAY_RANDOM, m2["mean"].to_numpy(float), np.nan)
+            base = base.fillna(pd.Series(v2, index=g.index))
+        e = g["ret_net"].astype(float) - base
+        ok = e.notna()
+        if ok.sum() >= 3:
+            dm = e[ok].groupby(g.loc[ok, "day"]).mean()
+            sd = dm.std(ddof=1) if len(dm) > 1 else np.nan
+            tval = float(dm.mean() / (sd / np.sqrt(len(dm)))) if sd and np.isfinite(sd) and sd > 0 else None
+            d["vs_same_day"] = {"excess": float(dm.mean()), "t": tval, "n": int(ok.sum()), "n_days": int(len(dm)),
+                                "coverage": float(ok.mean()), "significant": bool(tval is not None and tval > 2 and len(dm) >= 20)}
+        best, share = None, 0.0
+        mine = sets[t]
+        for o, s in sets.items():
+            if o == t or o.startswith("random") or not mine:
+                continue
+            sh = len(mine & s) / len(mine)
+            if sh > share:
+                best, share = o, sh
+        if best and share >= OVERLAP_MIN:
+            d["overlap"] = {"with": best, "share": share}
+        out[t] = d
+    names = [t for t in out if sets.get(t)]
+    parent = {t: t for t in names}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            inter = len(sets[a] & sets[b])
+            if inter and inter / len(sets[a]) >= GROUP_MIN and inter / len(sets[b]) >= GROUP_MIN:
+                parent[find(a)] = find(b)
+    groups: dict[str, list[str]] = {}
+    for t in names:
+        groups.setdefault(find(t), []).append(t)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members = sorted(members)
+        for t in members:
+            out[t]["group"] = members
+    return out
+
+
+def _exit_candidates(trader_id: str, cache: dict[str, list[str]]) -> list[str]:
+    """Exit rule names to match random controls: the suffix after the first '_' that names a known exit."""
+    if trader_id in cache:
+        return cache[trader_id]
+    parts = trader_id.split("_")
+    cands = ["_".join(parts[i:]) for i in range(1, len(parts))]
+    res = [c for c in cands if c in EXIT_RULES]
+    cache[trader_id] = res
+    return res
 
 
 def status(cfg: Config) -> dict[str, Any]:

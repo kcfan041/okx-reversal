@@ -353,7 +353,12 @@
       <select id="pp-book"><option value="C">C：只記報酬率</option><option value="A">A：10,000U 每筆 2% 1x</option><option value="B">B：仿你的習慣 20x</option></select>
     </h2>
     <div class="scroll"><table id="pp-board" class="clickable"></table></div>
-    <details class="hint"><summary>「勝過隨機」是什麼意思？</summary>以每日平均報酬比較同期隨機對照組，t &gt; 2 且至少 20 個交易日才標示顯著。</details>
+    <details class="hint"><summary>「勝過隨機」是什麼意思？</summary>以每日平均報酬比較同期隨機對照組，t &gt; 2 且至少 20 個交易日才標示顯著。
+      <ul>
+        <li><b>獨立天數</b>：依每天的交易筆數換算的「等效天數」（筆數都擠在少數幾天時會很小）；最大日＝單日占全部交易的比例。少於 10 天或最大日超過 25% 以黃色標示，代表成績可能只是幾次行情。</li>
+        <li><b>扣同日隨機</b>：每筆報酬減去「同一天、同方向、同出場」隨機對照的平均（樣本不足時用同方向任意出場），再以每日平均做 t 檢定。用來分辨是選股能力，還是只吃到那天的大盤方向。</li>
+        <li><b>同一訊號</b>：進場（同幣、同一小時）有 80% 以上互相重疊的交易員歸為同一組，等於同一個訊號，只能算一個證據；另外列出重疊最多的交易員。</li>
+      </ul></details>
   </div>
   <div class="panel">
     <h2>權益曲線 <small class="muted">（帳本 A/B；含未平倉浮動）</small></h2>

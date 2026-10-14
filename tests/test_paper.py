@@ -364,3 +364,28 @@ def test_leaderboard_vs_random(tmp_path):
     lb = {r["trader_id"]: r for r in paper.leaderboard(con)}
     assert lb["rule01"]["C"]["n"] == 30 and lb["rule01"]["vs_random"]["significant"]
     assert "vs_random" not in lb["random_long_1h"]
+
+
+def test_diagnostics_concentration_same_day_and_groups():
+    D = paper.DAY
+    rows = []
+
+    def add(tid, inst, day, ret, side="long", hour=0):
+        rows.append({"trader_id": tid, "inst_id": inst, "side": side, "entry_ts": T0 + day * D + hour * 3_600_000 + 300_000,
+                     "signal_ts": T0 + day * D + hour * 3_600_000, "ret_net": ret})
+    for k in range(10):
+        add("ruleA_24h", f"C{k}", 0 if k < 8 else k, 0.10)
+        add("ruleB_3d", f"C{k}", 0 if k < 8 else k, 0.12)
+    add("ruleC_24h", "Z", 1, 0.0)
+    for d in range(12):
+        for j in range(4):
+            add("random_long_24h", f"R{j}", d, 0.08 if d == 0 else 0.0)
+            add("random_long_1h", f"Q{j}", d, -0.5)
+    out = paper.diagnostics(pd.DataFrame(rows))
+    a = out["ruleA_24h"]
+    assert a["n_days"] == 3 and a["max_day_share"] == pytest.approx(0.8) and a["eff_days"] == pytest.approx(100 / 66)
+    v = a["vs_same_day"]
+    assert v["n"] == 10 and v["excess"] == pytest.approx((0.02 + 0.10 + 0.10) / 3)
+    assert a["group"] == ["ruleA_24h", "ruleB_3d"] and a["overlap"] == {"with": "ruleB_3d", "share": 1.0}
+    assert "group" not in out["ruleC_24h"] and "overlap" not in out["ruleC_24h"]
+    assert "random_long_24h" not in out

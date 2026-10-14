@@ -983,6 +983,30 @@ $("#pp-book").addEventListener("change", () => loadPaper());
 document.querySelectorAll('input[name="pp-src"]').forEach((r) => r.addEventListener("change", () => { ppFilter = null; loadPaper(); }));
 const ppSrc = () => document.querySelector('input[name="pp-src"]:checked').value;
 
+function groupNames(lb) {
+  const g = {};
+  let k = 0;
+  lb.forEach((r) => {
+    const m = r.diag && r.diag.group;
+    if (!m) return;
+    const key = m.join(",");
+    if (!(key in g)) g[key] = String.fromCharCode(65 + (k++ % 26));
+  });
+  return g;
+}
+function diagCols(groups) {
+  return [
+    { t: "獨立天數", f: (r) => { const d = r.diag; if (!d) return "-"; const bad = d.eff_days < 10 || d.max_day_share > 0.25;
+      return `<span class="${bad ? "warn" : ""}" title="交易日 ${d.n_days} 天；最大單日占 ${pct(d.max_day_share, 0)} 的交易；最好 3 天貢獻 ${d.top3_days_ret_share == null ? "-" : pct(d.top3_days_ret_share, 0)} 的報酬">${num(d.eff_days, 1)}</span> <span class="muted">最大日 ${pct(d.max_day_share, 0)}</span>`; } },
+    { t: "扣同日隨機", f: (r) => { const v = r.diag && r.diag.vs_same_day; if (!v) return "-";
+      return `${pctC(v.excess, 2)} <span class="muted">t=${num(v.t, 1)}</span>${v.significant ? ' <span class="badge ok">顯著</span>' : ""}`; } },
+    { t: "同一訊號", cls: "l", f: (r) => { const d = r.diag; if (!d) return "-";
+      const g = d.group ? `<span class="badge warn" title="${esc(d.group.join("、"))}">組 ${groups[d.group.join(",")]}（${d.group.length}）</span> ` : "";
+      const o = d.overlap ? `<span class="muted">與 ${esc(d.overlap.with)} 重疊 ${pct(d.overlap.share, 0)}</span>` : "";
+      return g + o || "-"; } },
+  ];
+}
+
 function renderBoard(lb) {
   const book = $("#pp-book").value;
   const rows = lb.map((r) => ({ ...r, b: r[book] || {} }));
@@ -998,6 +1022,7 @@ function renderBoard(lb) {
     { t: book === "C" ? "合計報酬" : "權益", f: (r) => (book === "C" ? pctC(r.b.pnl, 1) : `${num(r.b.equity)} <span class="muted">(${usd((r.b.equity || 0) - (r.b.start || 0))})</span>`) },
     { t: "強平", f: (r) => (r.b.liquidations ? `<span class="neg">${r.b.liquidations}</span>` : 0) },
     { t: "勝過隨機", f: (r) => (r.vs_random ? `${pctC(r.vs_random.diff, 2)} t=${num(r.vs_random.t, 1)} ${r.vs_random.significant ? '<span class="badge ok">顯著</span>' : ""}` : "-") },
+    ...diagCols(groupNames(lb)),
   ], rows, { onClick: (r) => { ppFilter = ppFilter === r.trader_id ? null : r.trader_id; loadPaperPositions(); loadPaperEquity(); } });
 }
 
@@ -1024,6 +1049,7 @@ async function loadReplay() {
     { t: "盲測日均", f: (x) => pctC(x.C.day_mean, 2) },
     { t: "盲測勝率", f: (x) => pct(x.C.win_rate, 0) },
     { t: "勝過隨機", f: (x) => (x.vs_random ? `${pctC(x.vs_random.diff, 2)} t=${num(x.vs_random.t, 1)} ${x.vs_random.significant ? '<span class="badge ok">顯著</span>' : ""}` : "-") },
+    ...diagCols(groupNames(r.leaderboard)),
     { t: "每月", f: (x) => `<div class="runchart" style="height:28px;width:180px">${(x.by_month || []).map((b) => `<div class="${b.mean < 0 ? "err" : ""}" style="height:${Math.min(100, Math.abs(b.mean) * 2000)}%" title="${b.m} ${pct(b.mean, 2)} (${b.n})"></div>`).join("")}</div>` },
   ], rules);
   renderBoard(r.leaderboard);
