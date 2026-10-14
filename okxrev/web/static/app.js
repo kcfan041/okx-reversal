@@ -160,7 +160,8 @@ const TASK_RESULT = { 0: "成功", 267009: "執行中", 267011: "尚未執行", 
 async function loadTaskBox() {
   let t;
   try { t = await api("/api/task"); } catch (e) { $("#dash-task").textContent = e.message; return; }
-  const state = t.paused ? '<span class="badge bad">已暫停（PAUSE 旗標）</span>' : '<span class="badge ok">運作中</span>';
+  if (t.collect) renderCollect({ ...t.collect, task: { registered: t.registered, state: t.state } });
+  const state = t.paused ? '<span class="badge bad">資料收集已暫停</span>' : '<span class="badge ok">運作中</span>';
   const running = t.sync_running ? '<span class="badge warn">同步執行中</span>' : '<span class="badge">閒置</span>';
   const html = t.registered
     ? `<dl class="kv"><div>${state} ${running}</div>
@@ -208,9 +209,62 @@ async function act(path, body) {
   } catch (e) { toast(e.message, true); }
   setTimeout(() => { loadTaskBox(); loadLog(); }, 800);
 }
-$("#btn-run").addEventListener("click", () => act("/api/task/run"));
-$("#btn-pause").addEventListener("click", () => act("/api/task/pause"));
-$("#btn-resume").addEventListener("click", () => act("/api/task/resume"));
+async function confirmable(path, label) {
+  try {
+    let r = await post(path);
+    if (r.needs_confirm) {
+      if (!confirm(r.message)) return null;
+      r = await post(path + (path.includes("?") ? "&" : "?") + "force=true");
+    }
+    toast(r.message, !r.ok);
+    return r;
+  } catch (e) { toast(e.message, true); return null; }
+}
+$("#btn-run").addEventListener("click", async () => { await confirmable("/api/task/run"); setTimeout(() => { loadTaskBox(); loadLog(); }, 800); });
+$("#btn-pause").addEventListener("click", () => collectSet("pause", "flag"));
+$("#btn-stop").addEventListener("click", () => collectSet("pause", "task"));
+$("#btn-resume").addEventListener("click", () => collectSet("resume"));
+
+/* ---------------- data collection switch ---------------- */
+let collectState = null;
+function hoursText(h) { return h < 1 ? `${Math.round(h * 60)} 分鐘` : h < 48 ? `${h.toFixed(1)} 小時` : `${(h / 24).toFixed(1)} 天`; }
+function renderCollect(s) {
+  collectState = s;
+  const b = $("#collect-sw");
+  if (!s) { b.textContent = "資料收集：?"; return; }
+  const taskOff = s.task && s.task.state === "Disabled";
+  b.classList.toggle("off", !!s.paused);
+  b.textContent = s.paused ? `資料收集：已${s.mode === "task" || taskOff ? "停止" : "暫停"}（${hoursText(s.hours)}）` : "資料收集：執行中";
+  const lost = (s.lost || []).map((f) => `${f.name}（約 ${hoursText(f.missing_h)} 無法補回）`).join("、");
+  const html = s.paused
+    ? `<span class="badge bad">已${s.mode === "task" ? "完全停止" : "暫停"}</span> 自 ${utc(s.since)} UTC，已 ${hoursText(s.hours)}${s.task ? `；Windows 排程：${esc(s.task.state || "-")}` : ""}${lost ? `<br>恢復後無法補回：${esc(lost)}` : ""}`
+    : `<span class="badge ok">執行中</span>${s.task ? ` Windows 排程：${esc(s.task.state || "-")}` : ""}${taskOff ? ' <span class="warn">（排程被停用，但沒有暫停旗標；按「恢復收集」重新啟用）</span>' : ""}`;
+  if ($("#ctrl-collect")) $("#ctrl-collect").innerHTML = html;
+}
+async function loadCollect() {
+  try { renderCollect(await api("/api/collect")); } catch { renderCollect(null); }
+}
+async function collectSet(op, mode) {
+  if (op === "pause" && mode === "task" && !confirm("完全停止：暫停收集並停用 Windows 排程。確定？")) return;
+  if (op === "resume" && collectState && collectState.paused) {
+    const lost = (collectState.lost || []).map((f) => f.name).join("、");
+    if (!confirm(`恢復資料收集？已停 ${hoursText(collectState.hours)}，下一次同步會補回可回補的資料${lost ? `；${lost} 有一段無法補回` : ""}。`)) return;
+  }
+  try {
+    const r = await post(op === "pause" ? `/api/collect/pause?mode=${mode}` : "/api/collect/resume");
+    toast(r.message, !r.ok);
+    renderCollect(r);
+  } catch (e) { toast(e.message, true); }
+  setTimeout(() => { loadCollect(); loadTaskBox(); }, 800);
+}
+$("#collect-sw").addEventListener("click", () => {
+  if (!collectState) return;
+  if (collectState.paused) return collectSet("resume");
+  const mode = confirm("暫停資料收集？\n按「確定」只暫停（排程照常觸發但立即結束）；\n要連 Windows 排程一起停用，請到「同步控制」按「完全停止」。") ? "flag" : null;
+  if (mode) collectSet("pause", mode);
+});
+loadCollect();
+setInterval(() => { if (!document.hidden) loadCollect(); }, 30000);
 $("#btn-only").addEventListener("click", () => {
   const insts = $("#only-insts").value.split(/[\s,]+/).filter(Boolean);
   if (!insts.length) return toast("請輸入合約", true);
@@ -976,7 +1030,7 @@ const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: 
 const EXIT_WHY = { time: "到期", stop: "止損", liquidation: "強平", stale: "資料中斷", "data gap": "資料缺口" };
 let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {};
 
-$("#btn-pp-tick").addEventListener("click", async () => { try { const r = await post("/api/paper/tick"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); } pollPaperJobs(); });
+$("#btn-pp-tick").addEventListener("click", async () => { await confirmable("/api/paper/tick"); pollPaperJobs(); });
 $("#btn-pp-train").addEventListener("click", async () => { try { const r = await post("/api/paper/train"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); } pollPaperJobs(); });
 $("#btn-pp-export").addEventListener("click", async () => { try { const r = await post("/api/paper/export"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); } });
 $("#pp-book").addEventListener("change", () => loadPaper());

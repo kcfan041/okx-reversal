@@ -820,9 +820,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--export", choices=["parquet", "csv"], default=None)
     ap.add_argument("--traders", nargs="+", default=None)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--force", action="store_true", help="run the tick even when data collection is paused")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     setup_logging(cfg.paths.logs, "paper", console=not args.quiet)
+    from okxrev import collect
+    if args.tick and collect.is_paused(cfg) and not args.force:
+        log.info("data collection paused (data/PAUSE); skipping paper tick")
+        if not args.quiet:
+            print("資料收集已暫停，跳過這一輪（加 --force 強制執行）")
+        args.tick = False
+        if not (args.export or args.status):
+            return 0
     if args.tick:
         from filelock import FileLock, Timeout
         lock = FileLock(str(cfg.paper_db) + ".lock", timeout=0)

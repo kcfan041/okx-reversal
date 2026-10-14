@@ -372,7 +372,7 @@ def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool
     finally:
         syncer.close()
         lock.release()
-        if cfg.paper.get("enabled", True) and not smoke and not only:
+        if cfg.paper.get("enabled", True) and not smoke and not only and not pause_flag(cfg).exists():
             spawn_paper(cfg)
 
 

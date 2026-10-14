@@ -161,6 +161,20 @@ uv run python -m okxrev.events_lab --similar CT-USDT-SWAP@2026-10-13T02:50      
 - 1 秒 K 只有約 7 個月（新幣從上市起），只用來細看，不用來建規則；1 分 K 約 2 年。
 - 已下架的幣沒有資料，有存活者偏差。設定在 `config.yaml` 的 `lab:`。
 
+## 暫停／恢復資料收集
+
+網頁右上角「資料收集」按鈕或「同步控制」分頁可以暫停、完全停止、恢復；也可以用命令列：
+
+```powershell
+uv run python -m okxrev.collect --pause     # 暫停：排程仍觸發但立即結束；紙上交易、過熱更新、提醒一起停
+uv run python -m okxrev.collect --stop      # 完全停止：另外停用 Windows 排程（需要系統管理員權限）
+uv run python -m okxrev.collect --resume    # 恢復（排程被停用時會重新啟用）
+uv run python -m okxrev.collect --status
+```
+
+- 恢復後下一次同步會補回 K 線、主動買賣量、溢價、資金費率；多空比（OKX 只留約 1 天）、爆倉（每幣最新約 100 筆）、OI 5 分鐘（幾小時）超過保留期的部分無法補回，介面會列出。
+- 暫停中「立即執行同步」「立即跑一輪」會先確認；網頁的即時查詢（持倉、盯盤、AI 即時資料）不受影響。
+
 ## 更新程式
 
 ```powershell

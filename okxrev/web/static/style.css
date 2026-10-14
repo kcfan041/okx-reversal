@@ -151,3 +151,5 @@ code { background: #0b0f13; padding: 1px 5px; border-radius: 4px; }
 .lab-tpl input[type=range] { flex: 1; }
 .lab-tpl input[type=number] { width: 70px; }
 .lab-tpl .v { width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+.collect-sw { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 12px; background: #16392f; color: #6fd3b0; border: 1px solid #2a5a4a; white-space: nowrap; cursor: pointer; }
+.collect-sw.off { background: #43201f; color: #ff8a80; border-color: #6a3330; }

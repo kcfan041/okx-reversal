@@ -169,23 +169,52 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.get("/api/task")
     def task() -> JSONResponse:
-        return ok({**tasks.task_info(), "paused": pause_flag(cfg).exists(), "sync_running": tasks.sync_running(cfg)})
+        from okxrev import collect
+        return ok({**tasks.task_info(), "paused": pause_flag(cfg).exists(), "collect": collect.state(cfg), "sync_running": tasks.sync_running(cfg)})
 
     @app.post("/api/task/run")
-    def task_run() -> JSONResponse:
+    def task_run(force: bool = False) -> JSONResponse:
+        if pause_flag(cfg).exists() and not force:
+            return ok({"ok": False, "needs_confirm": True, "message": "資料收集已暫停；確定要強制同步一次嗎？"})
         return ok(tasks.start_sync(cfg, force=pause_flag(cfg).exists()))
+
+    collect_cache: dict[str, Any] = {"t": 0.0, "task": None}
+
+    def _task_cached() -> dict[str, Any]:
+        import time as _t
+        if collect_cache["task"] is None or _t.monotonic() - collect_cache["t"] > 30:
+            collect_cache.update(t=_t.monotonic(), task=tasks.task_info())
+        return collect_cache["task"]
+
+    @app.get("/api/collect")
+    def collect_state() -> JSONResponse:
+        from okxrev import collect
+        return ok(collect.state(cfg, _task_cached))
+
+    @app.post("/api/collect/pause")
+    def collect_pause(mode: str = "flag") -> JSONResponse:
+        from okxrev import collect
+        if mode not in ("flag", "task"):
+            raise HTTPException(400, "bad mode")
+        collect_cache["task"] = None
+        return ok(collect.pause(cfg, mode, "web", tasks.set_task_enabled if mode == "task" else None))
+
+    @app.post("/api/collect/resume")
+    def collect_resume() -> JSONResponse:
+        from okxrev import collect
+        collect_cache["task"] = None
+        return ok(collect.resume(cfg, tasks.set_task_enabled, tasks.task_info))
 
     @app.post("/api/task/pause")
     def task_pause() -> JSONResponse:
-        f = pause_flag(cfg)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("paused from web UI\n", encoding="utf-8")
-        return ok({"ok": True, "message": "已暫停：之後的排程執行會立即結束", "paused": True})
+        from okxrev import collect
+        return ok(collect.pause(cfg, "flag", "web"))
 
     @app.post("/api/task/resume")
     def task_resume() -> JSONResponse:
-        pause_flag(cfg).unlink(missing_ok=True)
-        return ok({"ok": True, "message": "已恢復", "paused": False})
+        from okxrev import collect
+        collect_cache["task"] = None
+        return ok(collect.resume(cfg, tasks.set_task_enabled, tasks.task_info))
 
     @app.post("/api/sync/only")
     def sync_only(req: OnlyReq) -> JSONResponse:
@@ -637,7 +666,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return ok(df.drop(columns=["features"], errors="ignore").to_dict("records"))
 
     @app.post("/api/paper/tick")
-    def paper_tick() -> JSONResponse:
+    def paper_tick(force: bool = False) -> JSONResponse:
+        if pause_flag(cfg).exists():
+            if not force:
+                return ok({"ok": False, "needs_confirm": True, "message": "資料收集已暫停；確定要強制跑一輪紙上交易嗎？"})
+            return ok(tick_job.start(cfg, ["--tick", "--force"]))
         return ok(tick_job.start(cfg, ["--tick"]))
 
     @app.post("/api/paper/train")
