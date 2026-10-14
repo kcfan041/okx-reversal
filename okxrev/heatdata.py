@@ -200,8 +200,14 @@ class HeatSync:
 
 def sync_heat(cfg: Config, client: OkxClient, deadline: float | None = None, max_sec: float | None = 60,
               focus: list[str] | None = None) -> dict[str, Any]:
-    """Forward sync. Taker/mark for every instrument once an hour; L/S ratio and liquidations only for `focus`
-    (watchlist + current top-heat coins), every sync, since OKX keeps just a few hours of them."""
+    """Forward sync. Taker/mark for every instrument once an hour; L/S ratio and liquidations for `focus`
+    (watchlist + current top-heat coins) every sync. The rest of the market is covered on a slower cycle
+    (heat.ls_all_every_min, default 360: one 5m L/S page holds ~8h; heat.liq_all_every_min, default 30), lowest
+    priority, so a busy sync only delays them."""
+    hc = cfg.raw.get("heat") or {}
+    ls_every = int(hc.get("ls_all_every_min", 360)) * 60_000
+    liq_every = int(hc.get("liq_all_every_min", 30)) * 60_000
+    all_market = bool(hc.get("sentiment_all", True))
     if max_sec is not None:
         cap = time.monotonic() + max_sec
         deadline = cap if deadline is None else min(deadline, cap)
@@ -220,6 +226,15 @@ def sync_heat(cfg: Config, client: OkxClient, deadline: float | None = None, max
         for s in ("taker", "mark"):
             if hs.due(inst, s, HOUR, now):
                 jobs.append((1, hs.st(inst, s)[3] or 0, inst, s))
+    if all_market:
+        fset = set(focus)
+        for inst in insts:
+            if inst in fset:
+                continue
+            if hs.due(inst, "liq", liq_every, now):
+                jobs.append((2, hs.st(inst, "liq")[3] or 0, inst, "liq"))
+            if hs.due(inst, "ls", ls_every, now):
+                jobs.append((3, hs.st(inst, "ls")[3] or 0, inst, "ls"))
     jobs.sort()
     done = 0
     for _, _, inst, s in jobs:

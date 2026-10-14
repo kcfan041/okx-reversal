@@ -972,7 +972,7 @@ async function loadScan(refresh) {
 }
 
 /* ---------------- paper trading ---------------- */
-const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核" };
+const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則" };
 const EXIT_WHY = { time: "到期", stop: "止損", liquidation: "強平", stale: "資料中斷", "data gap": "資料缺口" };
 let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {};
 
@@ -1013,7 +1013,7 @@ async function loadReplay() {
   const m = r.meta;
   $("#pp-src-meta").textContent = `${m.start} ～ ${m.end}，${m.n_insts} 個合約，${fmtN(m.signals)} 個決策，產生於 ${m.generated_at}（耗時 ${Math.round(m.elapsed_sec / 60)} 分）`;
   $("#pp-replay-note").innerHTML = `<ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
-  const rules = r.leaderboard.filter((x) => x.kind === "rule" || x.kind === "ml");
+  const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab"].includes(x.kind));
   rules.sort((a, b) => (b.C.day_mean ?? -9) - (a.C.day_mean ?? -9));
   table($("#pp-replay-cmp"), [
     { t: "交易員", cls: "l wrap", f: (x) => `<b>${esc(x.trader_id)}</b><div class="muted">${esc(x.label)}</div>` },
@@ -1268,6 +1268,18 @@ async function loadHeatValidation() {
     { t: "盲測期", f: (x) => cell(x[x.best_h].blind, x[x.best_h].base_blind) },
     { t: "盲測勝率", f: (x) => pct(x[x.best_h].blind.win_rate, 0) },
   ], r.results);
+  const rc = (c, k) => { const s = c && c[k]; return s && s.n ? `${pctC(s.day_mean, 2)} <span class="muted">勝${pct(s.win_rate, 0)}</span>` : "-"; };
+  const riskRows = [];
+  (r.risk || []).forEach((x) => ["disc", "blind"].forEach((p) => x[p] && riskRows.push({ name: x.name, per: p, ...x[p] })));
+  table($("#ht-risk"), [
+    { t: "條件", k: "name", cls: "l" }, { t: "期間", f: (x) => (x.per === "disc" ? "找門檻期" : "盲測期") }, { t: "次數", k: "n" },
+    { t: "24h 不設止損", f: (x) => rc(x, "s_24h") }, { t: "24h 止損 10%", f: (x) => rc(x, "s_24h_sl10") }, { t: "24h 止損 20%", f: (x) => rc(x, "s_24h_sl20") },
+    { t: "6h 止損 10%", f: (x) => rc(x, "s_6h_sl10") },
+    { t: "MAE 中位／90 分位", f: (x) => (x.mae ? `${pct(x.mae.p50, 0)}／${pct(x.mae.p90, 0)}` : "-") },
+    { t: "曾逆漲 ≥20%／≥50%", f: (x) => (x.mae ? `${pct(x.mae.hit_20, 0)}／${pct(x.mae.hit_50, 0)}` : "-") },
+    { t: "資金費 24h（空方）", f: (x) => (x.funding && x.funding.n ? `${pctC(x.funding.mean_24h, 3)} <span class="muted">n=${x.funding.n}</span>` : "-") },
+    { t: "含資金費 24h", f: (x) => rc(x, "s_24h_with_funding") },
+  ], riskRows);
   $("#ht-val-notes").innerHTML = (r.notes || []).map((n) => `<li>${esc(n)}</li>`).join("") +
     `<li>各類與 24h 做空報酬的等級相關：${Object.entries(r.spearman_24h || {}).map(([k, c]) => `${k} ${c == null ? "-" : c.toFixed(3)}`).join("、")}</li>`;
 }

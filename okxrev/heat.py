@@ -419,9 +419,13 @@ def record_alerts(cfg: Config, con: Any, cands: list[dict[str, Any]], now: int) 
     return new
 
 
-def tick(cfg: Config, candles: dict[str, pd.DataFrame], feats: dict[str, pd.DataFrame], con: Any, now: int) -> dict[str, Any]:
-    """Called from the paper tick: refresh the snapshot once per closed hour (all indicators are hourly), then
-    record alerts (stored in paper.duckdb). Ticks within the same hour reuse the saved snapshot."""
+def scores_path(cfg: Config) -> Any:
+    return cfg.paths.results / "heat_scores.parquet"
+
+
+def refresh(cfg: Config, now: int) -> tuple[dict[str, Any], bool]:
+    """Market snapshot + hourly score history, recomputed once per clock hour and saved (heat_snapshot.json and
+    heat_scores.parquet). Returns (snapshot dict, recomputed?)."""
     hc = hcfg(cfg)
     out = cfg.paths.results / "heat_snapshot.json"
     hour = (now // HOUR) * HOUR
@@ -431,26 +435,56 @@ def tick(cfg: Config, candles: dict[str, pd.DataFrame], feats: dict[str, pd.Data
             prev = json.loads(out.read_text(encoding="utf-8"))
         except ValueError:
             prev = None
-    if prev and prev.get("hour") == hour and prev.get("rows"):
-        rules_hit = _rules_hit(con, now)
-        watch = set(hc.get("watchlist") or []) | {r["inst_id"] for r in prev["rows"][: int(hc["top_n"])]}
-        cands = [a for a in alerts_for(prev["rows"], watch, float(hc["alert_threshold"]), rules_hit) if a["kind"] == "rule"]
-        new = record_alerts(cfg, con, cands, now)
-        return {"n": len(prev["rows"]), "alerts": len(new), "cached": True}
+    if prev and prev.get("hour") == hour and prev.get("rows") and scores_path(cfg).exists():
+        complete = (prev.get("last_h") or 0) >= hour - HOUR
+        if complete or now - hour > 20 * 60_000 or now - int(prev.get("ts") or 0) < 4 * 60_000:
+            return prev, False
     with db.open_db(cfg.paths.db, read_only=True, wait_sec=2.0, max_tries=60) as dcon:
         since = now - (int(hc["pct_window_days"]) + 3) * DAY
         df = dcon.execute("SELECT inst_id, ts, open, high, low, close, vol_quote FROM candles WHERE ts >= ? ORDER BY inst_id, ts", [since]).df()
     full = {i: g.drop(columns="inst_id").set_index("ts") for i, g in df.groupby("inst_id")}
     snap = snapshot(cfg, full, now)
-    rows = snap["rows"]
+    keep_from = now - 3 * DAY
+    parts = [pd.DataFrame({"inst": i, "h": sc.index.to_numpy(np.int64), "score": sc["score"].to_numpy(float), "cooling": sc["cooling"].to_numpy(bool)})
+             .query("h >= @keep_from") for i, sc in snap["_hist"].items()]
+    sp = scores_path(cfg)
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    (pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["inst", "h", "score", "cooling"])).to_parquet(sp.with_suffix(".tmp"), index=False)
+    sp.with_suffix(".tmp").replace(sp)
+    last_h = max((int(sc.index.max()) for sc in snap["_hist"].values() if len(sc)), default=0)
+    data = {"ts": now, "hour": hour, "last_h": last_h, "rows": snap["rows"], "alerted_hour": (prev or {}).get("alerted_hour")}
+    tmp = out.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, default=_json), encoding="utf-8")
+    tmp.replace(out)
+    return data, True
+
+
+def load_scores(cfg: Config) -> pd.DataFrame:
+    p = scores_path(cfg)
+    return pd.read_parquet(p) if p.exists() else pd.DataFrame(columns=["inst", "h", "score", "cooling"])
+
+
+def tick(cfg: Config, candles: dict[str, pd.DataFrame], feats: dict[str, pd.DataFrame], con: Any, now: int) -> dict[str, Any]:
+    """Called from the paper tick: refresh the snapshot once per closed hour (all indicators are hourly), then
+    record alerts (stored in paper.duckdb). Hot / cooling alerts once per hour; rule-hit alerts every tick."""
+    hc = hcfg(cfg)
+    data, fresh = refresh(cfg, now)
+    rows = data["rows"]
+    hour = data["hour"]
     rules_hit = _rules_hit(con, now)
     watch = set(hc.get("watchlist") or []) | {r["inst_id"] for r in rows[: int(hc["top_n"])]}
-    new = record_alerts(cfg, con, alerts_for(rows, watch, float(hc["alert_threshold"]), rules_hit), now)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"ts": now, "hour": hour, "rows": rows}, ensure_ascii=False, default=_json), encoding="utf-8")
-    tmp.replace(out)
-    return {"n": snap["n"], "alerts": len(new), "cached": False}
+    cands = alerts_for(rows, watch, float(hc["alert_threshold"]), rules_hit)
+    full = data.get("alerted_hour") != hour
+    if not full:
+        cands = [a for a in cands if a["kind"] == "rule"]
+    new = record_alerts(cfg, con, cands, now)
+    if full:
+        out = cfg.paths.results / "heat_snapshot.json"
+        data["alerted_hour"] = hour
+        tmp = out.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, default=_json), encoding="utf-8")
+        tmp.replace(out)
+    return {"n": len(rows), "alerts": len(new), "cached": not fresh}
 
 
 def _rules_hit(con: Any, now: int) -> dict[str, str]:
@@ -479,6 +513,48 @@ def _forward(h: pd.DataFrame, hours: int, cost: float) -> np.ndarray:
     o = h["open"].shift(-1).to_numpy(float)
     c = h["close"].shift(-hours).to_numpy(float)
     return -(c / o - 1) - cost
+
+
+STOPS = (0.10, 0.20)
+
+
+def _path(h: pd.DataFrame, hours: int) -> tuple[np.ndarray, np.ndarray]:
+    """Highest high / lowest low over the `hours` hourly bars after the signal hour (entry hour .. exit hour)."""
+    hh = h["high"].rolling(hours, min_periods=hours).max().shift(-hours).to_numpy(float)
+    ll = h["low"].rolling(hours, min_periods=hours).min().shift(-hours).to_numpy(float)
+    return hh, ll
+
+
+def forward_risk(h: pd.DataFrame, cost: float, fund: pd.DataFrame | None) -> dict[str, np.ndarray]:
+    """Stop-loss variants, max adverse / favourable excursion and funding for a 24h short (and 6h with a 10% stop).
+    A stop fills at exactly entry*(1+stop) (no gap slippage); if the stop is touched in any bar of the window it
+    counts as stopped, even if the same bar also reached a profit level."""
+    o = h["open"].shift(-1).to_numpy(float)
+    out: dict[str, np.ndarray] = {}
+    for hours in (6, 24):
+        base = _forward(h, hours, cost)
+        hh, ll = _path(h, hours)
+        up = hh / o - 1
+        for s in STOPS:
+            if hours == 6 and s != 0.10:
+                continue
+            out[f"s_{hours}h_sl{int(s * 100)}"] = np.where(up >= s, -s - cost, base)
+        if hours == 24:
+            out["mae_24h"] = up
+            out["mfe_24h"] = 1 - ll / o
+    idx = h.index.to_numpy(np.int64)
+    f24 = np.full(len(idx), np.nan)
+    if fund is not None and len(fund):
+        fd = fund.sort_values("ts").drop_duplicates("ts")
+        ft = fd["ts"].to_numpy(np.int64)
+        cs = np.r_[0.0, np.cumsum(np.nan_to_num(fd["rate"].to_numpy(float)))]
+        entry = idx + HOUR
+        a = np.searchsorted(ft, entry, side="right")
+        b = np.searchsorted(ft, entry + 24 * HOUR, side="right")
+        covered = (entry >= ft[0]) & (entry + 24 * HOUR <= ft[-1] + 8 * HOUR)
+        f24 = np.where(covered, cs[b] - cs[a], np.nan)
+    out["fund_24h"] = f24
+    return out
 
 
 def events_for_period(cfg: Config, db_path: Any, start: int, end: int, window_days: int, progress: bool = True) -> pd.DataFrame:
@@ -510,14 +586,55 @@ def events_for_period(cfg: Config, db_path: Any, start: int, end: int, window_da
         small = float(np.nanmedian(g["vol_quote"].rolling(288).sum())) < 5e6
         cost = 2 * (fee + slip + (0.001 if small else 0.0))
         keep = (sc.index >= start) & (sc.index < end)
+        fu = _per_coin(extra, inst).get("funding")
         d = pd.DataFrame({"inst": inst, "ts": sc.index.to_numpy(np.int64), "score": sc["score"].to_numpy(),
                           "cooling": sc["cooling"].to_numpy(bool), "n_dims": sc["n_dims"].to_numpy(),
                           **{k: sc[k].to_numpy() for k in DIMENSIONS},
-                          **{f"s_{hh}h": _forward(h, hh, cost) for hh in (1, 6, 24)}})
+                          **{f"s_{hh}h": _forward(h, hh, cost) for hh in (1, 6, 24)},
+                          **{k: v.astype(np.float32) for k, v in forward_risk(h, cost, fu).items()}})
         rows.append(d[keep])
         if progress and n % 50 == 0:
             log.info("heat events %d/%d", n, len(insts))
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+def score_history(cfg: Config, db_path: Any, start: int, end: int) -> pd.DataFrame:
+    """Hourly score + cooling for every coin in [start, end) from a candle database; cached as parquet."""
+    from pathlib import Path
+    wd = int(hcfg(cfg)["pct_window_days"])
+    cache = cfg.paths.results / f"heat_hist_{Path(str(db_path)).stem}_{start // DAY}_{end // DAY}.parquet"
+    if cache.exists():
+        return pd.read_parquet(cache)
+    warm = (wd + 3) * DAY
+    with db.open_db(db_path, read_only=True, wait_sec=2.0, max_tries=60) as con:
+        insts = db.list_candle_insts(con)
+        extra = load_extra(con, start - warm)
+    if Path(str(db_path)) != Path(str(cfg.paths.db)):
+        with db.open_db(cfg.paths.db, read_only=True, wait_sec=2.0, max_tries=60) as con2:
+            live_ex = load_extra(con2, start - warm)
+        for k in ("funding", "open_interest"):
+            if k in live_ex and len(live_ex[k]):
+                extra[k] = pd.concat([extra.get(k, pd.DataFrame()), live_ex[k]], ignore_index=True)
+    extra = {"__split__": split_extra(extra)}
+    parts = []
+    for n, inst in enumerate(insts, 1):
+        with db.open_db(db_path, read_only=True, wait_sec=2.0, max_tries=60) as con:
+            g = con.execute("SELECT ts, open, high, low, close, vol_quote FROM candles WHERE inst_id = ? AND ts >= ? AND ts < ? ORDER BY ts",
+                            [inst, start - warm, end]).df().set_index("ts")
+        if len(g) < 300:
+            continue
+        sc = coin_heat(g, _per_coin(extra, inst), wd)
+        if sc.empty:
+            continue
+        sc = sc[sc.index >= start - DAY]
+        parts.append(pd.DataFrame({"inst": inst, "h": sc.index.to_numpy(np.int64), "score": sc["score"].to_numpy(float),
+                                   "cooling": sc["cooling"].to_numpy(bool)}))
+        if n % 50 == 0:
+            log.info("heat history %d/%d", n, len(insts))
+    out = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["inst", "h", "score", "cooling"])
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(cache, index=False)
+    return out
 
 
 def episode_starts(d: pd.DataFrame, mask: np.ndarray, gap_h: int = 24) -> pd.DataFrame:
@@ -583,6 +700,46 @@ def evaluate(cfg: Config, progress: bool = True) -> dict[str, Any]:
         pos = lambda s, b: s.get("n", 0) > 0 and s.get("day_mean", -1) > max(b or 0, 0)
         r["verdict"] = "可用" if good(dv, r[best]["base_disc"]) and good(bv, r[best]["base_blind"]) else \
             ("觀察中" if pos(dv, r[best]["base_disc"]) and pos(bv, r[best]["base_blind"]) else "無效")
+    risk = []
+    for name, kind, fn in variants:
+        if kind not in ("score", "stretch"):
+            continue
+        rr: dict[str, Any] = {"name": name}
+        for per, d in (("disc", disc), ("blind", blind)):
+            if not len(d):
+                continue
+            e = episode_starts(d, fn(d))
+            ts_ = e["ts"].to_numpy(np.int64)
+            cell: dict[str, Any] = {"n": int(len(e))}
+            for col in ("s_24h", "s_24h_sl10", "s_24h_sl20", "s_6h", "s_6h_sl10"):
+                if col in e:
+                    x = e[col].to_numpy(float)
+                    ok = np.isfinite(x)
+                    s = day_stats(x[ok], ts_[ok], boot=300)
+                    cell[col] = {k: s.get(k) for k in ("n", "n_days", "day_mean", "win_rate", "ci95")}
+                    cell[f"base_{col}"] = base(d, col)
+            if "mae_24h" in e:
+                mae = e["mae_24h"].to_numpy(float)
+                mae = mae[np.isfinite(mae)]
+                if len(mae):
+                    cell["mae"] = {"p50": float(np.quantile(mae, 0.5)), "p75": float(np.quantile(mae, 0.75)), "p90": float(np.quantile(mae, 0.9)),
+                                   "p95": float(np.quantile(mae, 0.95)), "max": float(mae.max()),
+                                   **{f"hit_{int(s * 100)}": float((mae >= s).mean()) for s in (0.05, 0.1, 0.2, 0.3, 0.5)}}
+                mfe = e["mfe_24h"].to_numpy(float)
+                mfe = mfe[np.isfinite(mfe)]
+                if len(mfe):
+                    cell["mfe_p50"] = float(np.quantile(mfe, 0.5))
+            if "fund_24h" in e:
+                f = e["fund_24h"].to_numpy(float)
+                ok = np.isfinite(f)
+                cell["funding"] = {"n": int(ok.sum()), "mean_24h": float(f[ok].mean()) if ok.any() else None,
+                                   "p90_24h": float(np.quantile(f[ok], 0.9)) if ok.sum() >= 10 else None}
+                if ok.sum() >= 30:
+                    x = (e["s_24h"].to_numpy(float) + f)[ok]
+                    s = day_stats(x[np.isfinite(x)], ts_[ok][np.isfinite(x)], boot=300)
+                    cell["s_24h_with_funding"] = {k: s.get(k) for k in ("n", "n_days", "day_mean", "win_rate", "ci95")}
+            rr[per] = cell
+        risk.append(rr)
     corr = {}
     if len(disc):
         for k in VALIDATED:
@@ -593,8 +750,10 @@ def evaluate(cfg: Config, progress: bool = True) -> dict[str, Any]:
            "n_disc_hours": int(len(disc)), "n_blind_hours": int(len(blind)),
            "coverage": {k: {"disc": float(disc[k].notna().mean()) if len(disc) else None,
                             "blind": float(blind[k].notna().mean()) if len(blind) else None} for k in DIMENSIONS},
-           "results": results, "spearman_24h": corr,
+           "results": results, "risk": risk, "spearman_24h": corr,
            "notes": ["報酬為做空淨報酬（下一小時開盤進場，扣手續費與滑價，未計資金費）",
+                     "風險表：止損以小時 K 最高價判斷，觸及即以止損價出場（不計跳空滑價）；MAE＝24 小時內對空單最不利的漲幅；"
+                     "資金費以實際費率加總（空單收正費率），只有 2026-06 之後的資料",
                      "同一幣種 24 小時內只算第一次觸發；信賴區間以每日平均 bootstrap",
                      "門檻與指標在 2025-10 之後的資料檢視，盲測期 2024-10 ～ 2025-09 只測一次",
                      "槓桿類（OI、資金費率）在盲測期幾乎沒有資料，該期分數只由其他類別組成",

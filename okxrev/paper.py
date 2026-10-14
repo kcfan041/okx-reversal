@@ -139,7 +139,9 @@ class Signal:
 EXIT_RULES = {
     "15m": (3, None), "1h": (12, None), "6h": (72, None), "24h": (288, None), "3d": (864, None),
     "6h_sl2atr": (72, 2.0), "24h_sl2atr": (288, 2.0), "you": (None, None),
+    "24h_sl10pct": (288, None), "24h_sl20pct": (288, None),
 }
+FIXED_STOP = {"24h_sl10pct": 0.10, "24h_sl20pct": 0.20}
 
 
 class Trader:
@@ -389,7 +391,8 @@ class Engine:
                 "INSERT INTO positions (pos_id, decision_id, trader_id, book, inst_id, side, state, signal_ts, notional, lever, hold_bars, funding, fee, mae, mfe) "
                 "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, 0, 0, 0) ON CONFLICT DO NOTHING",
                 [pid, s.decision_id, s.trader_id, b.name, s.inst_id, s.side, s.bar_ts, notional, b.lever if not b.unit else 1.0, hold])
-            self.con.execute("UPDATE positions SET stop_px = ? WHERE pos_id = ?", [float(stop_mult * atr) if stop_mult and atr else None, pid])
+            frac = FIXED_STOP.get(s.exit_rule) or (float(stop_mult * atr) if stop_mult and atr else None)
+            self.con.execute("UPDATE positions SET stop_px = ? WHERE pos_id = ?", [frac, pid])
             n += 1
         return n
 
@@ -556,6 +559,12 @@ def run_tick(cfg: Config, which: Iterable[str] | None = None, traders_: list[Tra
     con = connect(cfg)
     try:
         trs = traders_ if traders_ is not None else build_traders(cfg, which)
+        if any(t.kind == "heat" for t in trs):
+            try:
+                from okxrev import heat
+                heat.refresh(cfg, now)
+            except Exception:
+                log.exception("heat refresh before tick failed")
         eng = Engine(cfg, trs, con)
         r = con.execute("SELECT MAX(last_bar) FROM ticks").fetchone()
         last_done = int(r[0]) if r and r[0] is not None else None

@@ -242,7 +242,17 @@ def connect_out(cfg: Config, fresh: bool) -> duckdb.DuckDBPyConnection:
 
 def replay_traders(cfg: Config) -> list[Any]:
     from okxrev import traders as T
-    return [t for t in T.build(cfg) if t.kind != "llm"]
+    trs = [t for t in T.build(cfg) if t.kind != "llm"]
+    heat_trs = [t for t in trs if t.kind == "heat"]
+    if heat_trs:
+        from okxrev import heat
+        rc = rcfg(cfg)
+        start, end = parse_utc_ms(rc["start"]), parse_utc_ms(rc["end"])
+        log.info("replay: computing hourly heat scores for the old period")
+        hist = heat.score_history(cfg, old_db_path(cfg), start, end + 2 * DAY)
+        for t in heat_trs:
+            t.use_scores(hist)
+    return trs
 
 
 SIG_COLS = ["trader_id", "kind", "label", "params", "inst_id", "bar_ts", "side", "exit_rule", "score", "reason", "model_ver", "features"]
@@ -379,7 +389,8 @@ def _worker(args: tuple[Any, ...]) -> str:
     return out_path
 
 
-HOLD_BARS = {"15m": 3, "1h": 12, "6h": 72, "24h": 288, "3d": 864, "6h_sl2atr": 72, "24h_sl2atr": 288, "you": 12}
+HOLD_BARS = {"15m": 3, "1h": 12, "6h": 72, "24h": 288, "3d": 864, "6h_sl2atr": 72, "24h_sl2atr": 288, "you": 12,
+             "24h_sl10pct": 288, "24h_sl20pct": 288}
 
 
 def split_groups(sig: pd.DataFrame, n: int) -> list[list[str]]:

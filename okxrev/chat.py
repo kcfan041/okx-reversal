@@ -46,8 +46,8 @@ OKX USDT 永續合約的 5 分 K 歷史（約 2024-09 起）、即時行情、�
 1. 只根據工具查到的資料回答；查不到或資料不足時直接說明，不要猜測或編造數字。
 2. 先用最少的工具拿到需要的資料；可以在同一回合同時呼叫多個工具。不確定能查什麼時先呼叫 project_overview。
 3. 回答要具體：引用數字、時間（UTC）、樣本數；指出哪些結論樣本少或尚未通過盲測。
-4. 盲測（2024-10～2025-09，策略從沒看過的資料）是目前最可信的證據：只有 rule03/rule04（24h漲>30%且在頂部＋BTC弱勢＋爆量 做空）顯著勝過隨機；
-   過熱分數、機器學習、使用者分身目前都沒有被證實有預測力。
+4. 盲測（2024-10～2025-09，策略從沒看過的資料）是目前最可信的證據；各項目前的證據等級見下方「目前證據摘要」（由結果檔自動產生），
+   以它為準，不要沿用舊對話裡的結論。
 5. 不下確定的買賣指令；被問到要不要進場時，列出支持與反對的證據、歷史上類似情況的結果、風險（槓桿、強平、止損距離），讓使用者自己判斷。
 6. 使用者的交易習慣問題（過去診斷）：做空抱太短、高槓桿與強平、逆 BTC 方向、追高、做多選時機差。相關時可以提醒。
 7. 用繁體中文回答，精簡、有條理；適合時用表格。時間一律標 UTC，格式 YYYY-MM-DD HH:MM（介面會把它變成可點擊開 K 線）。
@@ -190,6 +190,57 @@ def _wire(m: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in m.items() if not k.startswith("_")}
 
 
+def evidence_summary(cfg: Config) -> str:
+    """Current evidence levels built from the result files (discover / replay / heat / paper), so the prompt never
+    carries stale conclusions."""
+    lines: list[str] = []
+    pc = lambda v: "-" if v is None else f"{v * 100:+.2f}%"
+    try:
+        from okxrev import replay
+        cmp_ = replay.compare(cfg)
+        lb = cmp_.get("leaderboard", [])
+        sig = [r for r in lb if (r.get("vs_random") or {}).get("significant")]
+        if sig:
+            lines.append("盲測重播中顯著勝過隨機的交易員（其餘都沒有）：" + "、".join(f"{r['trader_id']}（{(r.get('label') or '')[:40]}）" for r in sig[:8]))
+        elif lb:
+            lines.append("盲測重播：沒有交易員顯著勝過隨機")
+    except Exception:
+        pass
+    p = cfg.paths.results / "heat.json"
+    if p.exists():
+        try:
+            h = json.loads(p.read_text(encoding="utf-8"))
+            ok_ = [r for r in h.get("results", []) if r.get("verdict") in ("可用", "觀察中")]
+            parts = []
+            for r in ok_:
+                b = r[r["best_h"]]
+                parts.append(f"{r['name']}［{r['verdict']}，做空{r['best_h'][2:]}：找門檻期 {pc(b['disc'].get('day_mean'))}、盲測 {pc(b['blind'].get('day_mean'))}，"
+                             f"隨機 {pc(b.get('base_blind'))}］")
+            bad = [r["name"] for r in h.get("results", []) if r.get("verdict") == "無效"]
+            lines.append(f"過熱分數驗證（{h.get('generated_at')}）：" + ("；".join(parts) if parts else "沒有條件通過") +
+                         (f"；無效：{'、'.join(bad)}" if bad else "") + "。注意：持有 1 小時做空通常為負（過熱後常再漲一段）")
+            rk = next((x for x in h.get("risk", []) if x["name"] == "score≥80"), None)
+            if rk and rk.get("blind", {}).get("mae"):
+                m, bl = rk["blind"]["mae"], rk["blind"]
+                lines.append(f"過熱≥80 做空 24h 風險（盲測）：中途最大反向漲幅中位數 {m['p50'] * 100:.0f}%、90 分位 {m['p90'] * 100:.0f}%，"
+                             f"{m['hit_20'] * 100:.0f}% 的案例曾逆向漲 20% 以上；止損 10% 版本日均 {pc((bl.get('s_24h_sl10') or {}).get('day_mean'))}、"
+                             f"止損 20% 版本 {pc((bl.get('s_24h_sl20') or {}).get('day_mean'))}")
+        except Exception:
+            pass
+    d = cfg.paths.results / "discover.json"
+    if d.exists():
+        try:
+            res = json.loads(d.read_text(encoding="utf-8")).get("results", [])
+            n = {v: sum(1 for r in res if r["verdict"] == v) for v in ("可用", "觀察中")}
+            lines.append(f"進場探索（探索期判定，非盲測）：可用 {n['可用']} 條、觀察中 {n['觀察中']} 條")
+        except Exception:
+            pass
+    from okxrev import ml
+    if ml.has_model(cfg, "ml") or ml.has_model(cfg, "twin"):
+        lines.append("機器學習與使用者分身：只有紙上交易／盲測重播的排行可作為證據，請以 paper_trading 工具查實際成績")
+    return "\n\n目前證據摘要（自動產生）：\n" + "\n".join(f"- {x}" for x in lines) if lines else ""
+
+
 def live_context(cfg: Config, box: Toolbox) -> str:
     """Running bots right now (OKX, cached 60s); empty when there is no key, live data is off, or the call fails."""
     if not box.allow_private or not box.allow_live:
@@ -232,6 +283,7 @@ def run_turn(cfg: Config, cid: str | None, user_text: str | None, inst: str | No
         sys_msg = SYSTEM + f"\n\n現在時間：{ms_to_str(db.now_ms())} UTC。"
         if inst:
             sys_msg += f"\n使用者目前選擇討論的合約：{inst}（問題沒指明合約時就是指它）。"
+        sys_msg += evidence_summary(cfg)
         sys_msg += live_context(cfg, box)
         msgs = [{"role": "system", "content": sys_msg}] + [_wire(m) for m in hist[-int(c["history_messages"]):]]
         while msgs[1:] and msgs[1]["role"] == "tool":

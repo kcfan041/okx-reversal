@@ -83,6 +83,27 @@ def test_chat_bots_tool_live_first(cfg, monkeypatch):
     assert d2["running_now_live"] == [] and len(d2["history_bots"]) == 2
 
 
+def test_evidence_summary_from_results(cfg):
+    assert "過熱" not in chat.evidence_summary(cfg)
+    b = {"n": 10, "n_days": 10, "day_mean": 0.005}
+    res = {"generated_at": "2026-10-14 00:35", "results": [
+        {"name": "score≥80", "verdict": "可用", "best_h": "s_24h", "s_24h": {"disc": b, "blind": b, "base_blind": -0.003}},
+        {"name": "合約溢價≥90", "verdict": "無效", "best_h": "s_24h", "s_24h": {"disc": b, "blind": b}}],
+           "risk": [{"name": "score≥80", "blind": {"mae": {"p50": 0.05, "p90": 0.3, "hit_20": 0.15}, "s_24h_sl10": {"day_mean": -0.001},
+                                                    "s_24h_sl20": {"day_mean": 0.002}}}]}
+    (cfg.paths.results / "heat.json").write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
+    s = chat.evidence_summary(cfg)
+    assert "score≥80［可用" in s and "無效：合約溢價≥90" in s and "90 分位 30%" in s
+    assert "沒有被證實" not in chat.SYSTEM
+
+
+def test_build_includes_heat_traders(cfg):
+    from okxrev import traders as TR
+    ids = {t.trader_id for t in TR.build(cfg)}
+    assert {"heat80_24h", "heat90_24h_sl10pct", "heat80_24h_sl20pct"} <= ids
+    assert any(t.startswith("random_short_24h_sl10pct") for t in ids)
+
+
 def test_chat_system_context(cfg, monkeypatch):
     box = T.Toolbox(cfg)
     monkeypatch.setattr(box, "priv", lambda: FakeClient())

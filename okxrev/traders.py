@@ -177,6 +177,66 @@ class ModelTrader(Trader):
         return out
 
 
+class HeatTrader(Trader):
+    """Short when the hourly overheat score crosses `threshold` (first hour of an episode: the score was below it for
+    the previous 24 hours). The hour [H, H+1h) is known at H+1h, so the signal is the 5m bar whose close is H+1h
+    (bar_ts = H + 55m); entry is the next bar's open, the same as the validation's next-hour open."""
+    kind = "heat"
+    GAP_H = 24
+
+    def __init__(self, cfg: Config, threshold: float, exit_rule: str, verdict: str | None = None):
+        self.cfg, self.threshold, self.exit = cfg, float(threshold), exit_rule
+        self.trader_id = f"heat{int(threshold)}_{exit_rule}"
+        self.label = f"過熱≥{int(threshold)} 做空（{exit_rule}{'，驗證' + verdict if verdict else ''}）"
+        self.verdict = verdict
+        self.scores: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self.fixed = False
+
+    def use_scores(self, df: pd.DataFrame) -> None:
+        """Pin a score history (replay); prepare() will not reload the live file."""
+        self.set_scores(df)
+        self.fixed = True
+
+    def params(self) -> dict[str, Any]:
+        return {"threshold": self.threshold, "exit": self.exit, "verdict": self.verdict, "gap_h": self.GAP_H}
+
+    def set_scores(self, df: pd.DataFrame) -> None:
+        self.scores = {}
+        if df is None or df.empty:
+            return
+        for inst, g in df.sort_values(["inst", "h"]).groupby("inst", sort=False):
+            self.scores[str(inst)] = (g["h"].to_numpy(np.int64), g["score"].to_numpy(float))
+
+    def prepare(self, ctx: Context) -> None:
+        if self.fixed:
+            return
+        from okxrev import heat
+        self.set_scores(heat.load_scores(self.cfg))
+
+    def fire_hours(self, inst: str) -> np.ndarray:
+        x = self.scores.get(inst)
+        if x is None:
+            return np.array([], dtype=np.int64)
+        h, s = x
+        hit = np.nan_to_num(s, nan=-1) >= self.threshold
+        out = []
+        for i in np.flatnonzero(hit):
+            j0 = np.searchsorted(h, h[i] - self.GAP_H * 3_600_000)
+            if hit[j0:i].any():
+                continue
+            out.append(h[i])
+        return np.asarray(out, dtype=np.int64)
+
+    def signals(self, ctx: Context, inst: str, f: pd.DataFrame, bars: np.ndarray) -> list[Signal]:
+        fh = self.fire_hours(inst)
+        if len(fh) == 0:
+            return []
+        sig_bars = fh + 3_600_000 - 300_000
+        bars = np.asarray(bars, dtype=np.int64)
+        hit = sig_bars[np.isin(sig_bars, bars)]
+        return [Signal(self.trader_id, inst, int(b), "short", self.exit, self.threshold, f"過熱分數 ≥ {self.threshold:.0f}") for b in hit]
+
+
 class Precomputed(Trader):
     """Replay helper: runs the wrapped trader's own `signals()` once per instrument over the whole period, then
     serves those signals bar by bar. Every signal depends only on bars at or before its timestamp (rule masks,
@@ -270,6 +330,20 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     lab = custom_rules.traders(cfg)
     out += lab
     exits_used = sorted(set(exits_used) | {t.exit for t in lab})
+    hc = cfg.raw.get("heat") or {}
+    if hc.get("paper", True):
+        verdicts = {}
+        hp = cfg.paths.results / "heat.json"
+        if hp.exists():
+            try:
+                import json as _json
+                verdicts = {r["name"]: r["verdict"] for r in _json.loads(hp.read_text(encoding="utf-8")).get("results", [])}
+            except ValueError:
+                pass
+        for thr in hc.get("paper_thresholds", [80, 90]):
+            for ex in hc.get("paper_exits", ["24h", "24h_sl10pct", "24h_sl20pct"]):
+                out.append(HeatTrader(cfg, thr, ex, verdicts.get(f"score≥{int(thr)}")))
+        exits_used = sorted(set(exits_used) | set(hc.get("paper_exits", ["24h", "24h_sl10pct", "24h_sl20pct"])))
     prob = float(pc.get("random_prob", 0.0002))
     for side in ("long", "short"):
         for ex in exits_used:
