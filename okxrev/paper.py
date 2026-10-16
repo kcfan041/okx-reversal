@@ -142,6 +142,17 @@ EXIT_RULES = {
     "24h_sl10pct": (288, None), "24h_sl20pct": (288, None),
 }
 FIXED_STOP = {"24h_sl10pct": 0.10, "24h_sl20pct": 0.20}
+FALLBACK_STOP = 0.10
+SL20_BASES = ("15m", "1h", "6h", "24h", "3d")
+for _b in SL20_BASES:
+    if f"{_b}_sl20pct" not in EXIT_RULES:
+        EXIT_RULES[f"{_b}_sl20pct"] = (EXIT_RULES[_b][0], None)
+    FIXED_STOP[f"{_b}_sl20pct"] = 0.20
+
+
+def with_sl20(exit_rule: str) -> str | None:
+    """The +20% fixed-stop variant of a plain time exit (None if the exit already has a stop or is unknown)."""
+    return f"{exit_rule}_sl20pct" if exit_rule in SL20_BASES else None
 
 
 class Trader:
@@ -362,11 +373,36 @@ class Engine:
                           s.model_ver, json.dumps(s.features, ensure_ascii=False, default=float), db.now_ms()])
         return True
 
+    def resolve_stop(self, s: Signal, feats: dict[str, pd.DataFrame]) -> None:
+        """Stop distance (fraction of entry) for the signal, stored in its features before it is recorded:
+        fixed-% exits use their %, ATR exits use mult x ATR (from the signal, else from the bar's features), and fall
+        back to FALLBACK_STOP when ATR is unavailable (marked _stop_fallback)."""
+        if "_stop_frac" in s.features:
+            return
+        _, stop_mult = EXIT_RULES.get(s.exit_rule, (72, None))
+        frac = FIXED_STOP.get(s.exit_rule)
+        if frac is None and stop_mult:
+            atr = s.features.get("atr")
+            if atr is None or not np.isfinite(float(atr)):
+                f = feats.get(s.inst_id)
+                if f is not None and "atr" in f and s.bar_ts in f.index:
+                    v = f.at[s.bar_ts, "atr"]
+                    atr = float(v) if v is not None and np.isfinite(v) else None
+                else:
+                    atr = None
+            if atr is not None and atr > 0:
+                frac = float(stop_mult * atr)
+            else:
+                frac = FALLBACK_STOP
+                s.features["_stop_fallback"] = True
+        if frac is not None:
+            s.features["_stop_frac"] = float(frac)
+
     def queue(self, s: Signal, feats: dict[str, pd.DataFrame]) -> int:
         n = 0
         hold, stop_mult = EXIT_RULES.get(s.exit_rule, (72, None))
         hold = int(s.features.get("_hold_bars") or hold or 72)
-        atr = s.features.get("atr")
+        self.resolve_stop(s, feats)
         for b in self.books:
             if self.has_open(s.trader_id, b.name, s.inst_id):
                 continue
@@ -391,8 +427,7 @@ class Engine:
                 "INSERT INTO positions (pos_id, decision_id, trader_id, book, inst_id, side, state, signal_ts, notional, lever, hold_bars, funding, fee, mae, mfe) "
                 "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, 0, 0, 0) ON CONFLICT DO NOTHING",
                 [pid, s.decision_id, s.trader_id, b.name, s.inst_id, s.side, s.bar_ts, notional, b.lever if not b.unit else 1.0, hold])
-            frac = FIXED_STOP.get(s.exit_rule) or (float(stop_mult * atr) if stop_mult and atr else None)
-            self.con.execute("UPDATE positions SET stop_px = ? WHERE pos_id = ?", [frac, pid])
+            self.con.execute("UPDATE positions SET stop_px = ? WHERE pos_id = ?", [s.features.get("_stop_frac"), pid])
             n += 1
         return n
 
@@ -474,7 +509,7 @@ class Engine:
         all_sigs: dict[int, list[Signal]] = {}
         items = [(inst, f, ctx.new_bars[inst]) for inst, f in ctx.feats.items()
                  if inst in ctx.new_bars and len(ctx.new_bars[inst])]
-        order = sorted(self.traders, key=lambda t: t.kind == "llm")
+        order = sorted(self.traders, key=lambda t: (t.kind == "follow", t.kind == "llm", hasattr(t, "inner")))
         for tr in order:
             try:
                 tr.prepare(ctx)
@@ -496,6 +531,8 @@ class Engine:
             for s in all_sigs.get(t, []):
                 if not s.features:
                     s.features = ctx.snapshot(s.inst_id, s.bar_ts)
+                if s.action == "enter":
+                    self.resolve_stop(s, ctx.feats)
                 if self.record(s):
                     n_sig += 1
                     if s.action == "enter":

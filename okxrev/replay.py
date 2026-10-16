@@ -299,10 +299,24 @@ def precompute(cfg: Config, trs: list[Any], candles: dict[str, pd.DataFrame], fe
     from okxrev.traders import Precomputed
     ctx0 = Context(cfg, start, start, {}, feats, candles, {}, None)  # type: ignore[arg-type]
     rows = []
-    for tr in trs:
-        p = Precomputed(tr)
+    built: dict[str, Any] = {}
+    from okxrev.traders import StopVariant
+    for tr in sorted(trs, key=lambda t: (t.kind == "follow", isinstance(t, StopVariant))):
+        if tr.kind == "follow":
+            continue
         t1 = time.monotonic()
-        n = p.build(ctx0, start, end)
+        if isinstance(tr, StopVariant) and tr.inner.trader_id in built:
+            p = Precomputed(tr)
+            base = built[tr.inner.trader_id]
+            n = 0
+            for inst, d in base.by_inst.items():
+                for ts, sigs in d.items():
+                    p.by_inst.setdefault(inst, {})[ts] = tr._conv(sigs)
+                    n += len(sigs)
+        else:
+            p = Precomputed(tr)
+            n = p.build(ctx0, start, end)
+        built[tr.trader_id] = p
         log.info("precomputed %-28s %6d signals in %.1fs", tr.trader_id, n, time.monotonic() - t1)
         prm = json.dumps(tr.params(), ensure_ascii=False, default=float)
         for inst, d in p.by_inst.items():
@@ -389,8 +403,12 @@ def _worker(args: tuple[Any, ...]) -> str:
     return out_path
 
 
-HOLD_BARS = {"15m": 3, "1h": 12, "6h": 72, "24h": 288, "3d": 864, "6h_sl2atr": 72, "24h_sl2atr": 288, "you": 12,
-             "24h_sl10pct": 288, "24h_sl20pct": 288}
+def _hold_bars() -> dict[str, int]:
+    from okxrev.paper import EXIT_RULES
+    return {k: int(v[0] or 12) for k, v in EXIT_RULES.items()}
+
+
+HOLD_BARS = _hold_bars()
 
 
 def split_groups(sig: pd.DataFrame, n: int) -> list[list[str]]:

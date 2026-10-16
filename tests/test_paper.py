@@ -402,3 +402,45 @@ def test_diagnostics_concentration_same_day_and_groups():
     assert a["group"] == ["ruleA_24h", "ruleB_3d"] and a["overlap"] == {"with": "ruleB_3d", "share": 1.0}
     assert "group" not in out["ruleC_24h"] and "overlap" not in out["ruleC_24h"]
     assert "random_long_24h" not in out
+
+
+def test_atr_stop_fallback_and_feature_atr(tmp_path):
+    cfg = make_cfg(tmp_path)
+    con = paper.connect(cfg)
+    g = bars([100.0] * 40)
+    s = int(g.index[5])
+    eng = Engine(cfg, [Fixed("noatr", {s}, side="short", exit_rule="6h_sl2atr", atr=None),
+                       Fixed("fromf", {s}, side="short", exit_rule="6h_sl2atr", atr=None),
+                       Fixed("fixed", {s}, side="short", exit_rule="3d_sl20pct", atr=None)], con)
+    c = ctx_for(cfg, con, g, s, [s])
+    c.feats["AAA"]["atr"] = np.nan
+    eng.tick(c)
+    stops = dict(con.execute("SELECT trader_id, stop_px FROM positions WHERE book='C'").fetchall())
+    assert stops["noatr"] == pytest.approx(paper.FALLBACK_STOP) and stops["fixed"] == pytest.approx(0.20)
+    feats = json.loads(con.execute("SELECT features FROM decisions WHERE trader_id='noatr'").fetchone()[0])
+    assert feats["_stop_fallback"] is True
+    con2 = paper.connect(make_cfg(tmp_path / "b"))
+    eng2 = Engine(make_cfg(tmp_path / "b"), [Fixed("fromf", {s}, side="short", exit_rule="6h_sl2atr", atr=None)], con2)
+    c2 = ctx_for(cfg, con2, g, s, [s])
+    c2.feats["AAA"]["atr"] = 0.02
+    eng2.tick(c2)
+    assert con2.execute("SELECT stop_px FROM positions WHERE book='C'").fetchone()[0] == pytest.approx(0.04)
+
+
+def test_sl20_variant_stops_out_and_shares_signals(tmp_path):
+    from okxrev.traders import StopVariant
+    cfg = make_cfg(tmp_path)
+    con = paper.connect(cfg)
+    prices = [100.0] * 8 + [100.0, 105.0, 125.0] + [125.0] * 30
+    g = bars(prices)
+    s = int(g.index[6])
+    base = Fixed("ruleX_3d", {s}, side="short", exit_rule="3d")
+    var = StopVariant(base, paper.with_sl20("3d"))
+    assert var.trader_id == "ruleX_3d_sl20" and var.exit == "3d_sl20pct"
+    eng = Engine(cfg, [var, base], con)
+    eng.tick(ctx_for(cfg, con, g, s, [s]))
+    eng.tick(ctx_for(cfg, con, g, int(g.index[-1]), []))
+    r = dict(con.execute("SELECT trader_id, exit_reason FROM positions WHERE book='C'").fetchall())
+    assert r["ruleX_3d_sl20"] == "stop"
+    assert con.execute("SELECT state FROM positions WHERE book='C' AND trader_id='ruleX_3d'").fetchone()[0] == "open"
+    assert paper.with_sl20("6h_sl2atr") is None and paper.EXIT_RULES["3d_sl20pct"][0] == 864

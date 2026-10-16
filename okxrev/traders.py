@@ -141,6 +141,38 @@ class RuleTrader(Trader):
         return out
 
 
+class StopVariant(Trader):
+    """Same entries as the wrapped trader, exit replaced by its +20% fixed-stop variant (e.g. 3d -> 3d_sl20pct).
+    Reuses the wrapped trader's signals from this tick when the engine already computed them."""
+
+    def __init__(self, inner: Trader, exit_rule: str):
+        self.inner = inner
+        self.kind = inner.kind
+        self.exit = exit_rule
+        self.trader_id = f"{inner.trader_id}_sl20"
+        self.label = f"{inner.label}＋止損 20%"
+
+    def params(self) -> dict[str, Any]:
+        return {**self.inner.params(), "exit": self.exit, "stop_variant_of": self.inner.trader_id}
+
+    def prepare(self, ctx: Context) -> None:
+        if self.inner.trader_id not in getattr(ctx, "computed", {}):
+            self.inner.prepare(ctx)
+
+    def _conv(self, sigs: list[Signal]) -> list[Signal]:
+        from dataclasses import replace as _replace
+        return [_replace(s, trader_id=self.trader_id, exit_rule=self.exit, features=dict(s.features)) for s in sigs]
+
+    def signals(self, ctx: Context, inst: str, f: pd.DataFrame, bars: np.ndarray) -> list[Signal]:
+        return self._conv(self.inner.signals(ctx, inst, f, bars))
+
+    def signals_batch(self, ctx: Context, items: list[tuple[str, pd.DataFrame, np.ndarray]]) -> list[Signal]:
+        done = getattr(ctx, "computed", {}).get(self.inner.trader_id)
+        if done is not None:
+            return self._conv(done)
+        return self._conv(self.inner.signals_batch(ctx, items))
+
+
 class RandomTrader(Trader):
     kind = "random"
 
@@ -390,12 +422,19 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     from okxrev import discover, llm, ml
     out: list[Trader] = []
     pc = cfg.paper
-    kinds = {"rule": True, "lab": True, "heat": True, "ml": True, "twin": True, "llm": True, **(pc.get("kinds") or {})}
+    kinds = {"rule": True, "rule_sl20": True, "lab": True, "heat": True, "ml": True, "twin": True, "llm": True,
+             "follow_long": True, "follow_short": True, **(pc.get("kinds") or {})}
     res = discover.load(cfg) or {}
     active = [r for r in res.get("results", []) if r["verdict"] in ("可用", "觀察中")] if kinds["rule"] else []
     exits_used = sorted({r["exit"] for r in active} | {"6h_sl2atr"})
+    from okxrev.paper import with_sl20
     for tid, r in zip(rule_ids(cfg, active), active):
-        out.append(RuleTrader(r, tid))
+        rt = RuleTrader(r, tid)
+        out.append(rt)
+        sl = with_sl20(rt.exit)
+        if kinds.get("rule_sl20", True) and sl:
+            out.append(StopVariant(rt, sl))
+            exits_used = sorted(set(exits_used) | {sl})
     from okxrev import custom_rules
     lab = custom_rules.traders(cfg) if kinds["lab"] else []
     out += lab
