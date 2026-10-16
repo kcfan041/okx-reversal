@@ -645,6 +645,34 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             con.close()
         return ok(df.to_dict("records"))
 
+    @app.get("/api/paper/follow")
+    def paper_follow(trader: str, src: str = "live", limit: int = 30) -> JSONResponse:
+        if not re.match(r"^follow_[A-Za-z0-9_]{1,60}$", trader):
+            raise HTTPException(400, "bad trader")
+        from okxrev.follow import FOLLOW_SETS, HOUR
+        fs = next((x for x in FOLLOW_SETS if x["id"] == trader), None)
+        con = _paper_con(src)
+        if con is None:
+            return ok({"picks": []})
+        try:
+            try:
+                rows = con.execute("SELECT period_ts, picks FROM follow_picks WHERE trader_id = ? ORDER BY period_ts DESC LIMIT ?",
+                                   [trader, max(1, min(limit, 500))]).fetchall()
+            except Exception:
+                rows = []
+            src_n = con.execute("SELECT json_extract_string(d.features, '$._follow_src') s, COUNT(*), AVG(p.ret_net) FROM positions p "
+                                "JOIN decisions d USING (decision_id) WHERE p.trader_id = ? AND p.book = 'C' AND p.state = 'closed' GROUP BY 1",
+                                [trader]).fetchall()
+        finally:
+            con.close()
+        picks = [{"period_ts": int(p), "picks": json.loads(k)} for p, k in rows]
+        nxt = None
+        if fs:
+            step = fs["step_h"] * HOUR
+            nxt = (db.now_ms() // step + 1) * step
+        return ok({"set": fs, "picks": picks, "next_repick": nxt,
+                   "by_source": [{"trader_id": s, "n": int(n), "mean": float(m) if m is not None else None} for s, n, m in src_n]})
+
     @app.get("/api/paper/equity")
     def paper_equity(book: str = "A", src: str = "live") -> JSONResponse:
         if book not in ("A", "B"):

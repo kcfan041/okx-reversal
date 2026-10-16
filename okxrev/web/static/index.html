@@ -373,7 +373,18 @@
       <select id="pp-book"><option value="C">C：只記報酬率</option><option value="A">A：10,000U 每筆 2% 1x</option><option value="B">B：仿你的習慣 20x</option></select>
     </h2>
     <div id="pp-market" class="pp-market"></div>
+    <div class="row pp-filter" id="pp-filter">
+      <span class="muted">顯示：</span>
+      <label><input type="radio" name="pp-kind" value="" checked> 全部</label>
+      <label><input type="radio" name="pp-kind" value="rule"> 探索規則</label>
+      <label><input type="radio" name="pp-kind" value="sl20"> 止損 20% 版本</label>
+      <label><input type="radio" name="pp-kind" value="follow"> 跟單</label>
+      <label><input type="radio" name="pp-kind" value="heat"> 過熱</label>
+      <label><input type="radio" name="pp-kind" value="model"> 模型／分身</label>
+      <label><input type="radio" name="pp-kind" value="random"> 隨機對照</label>
+    </div>
     <div class="scroll"><table id="pp-board" class="clickable"></table></div>
+    <div id="pp-follow" class="pp-follow" style="display:none"></div>
     <details class="hint"><summary>「勝過隨機」是什麼意思？</summary>以每日平均報酬比較同期隨機對照組，t &gt; 2 且至少 20 個交易日才標示顯著。
       <ul>
         <li><b>獨立天數</b>：依每天的交易筆數換算的「等效天數」（筆數都擠在少數幾天時會很小）；最大日＝單日占全部交易的比例。少於 10 天或最大日超過 25% 以黃色標示，代表成績可能只是幾次行情。</li>

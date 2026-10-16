@@ -31,6 +31,10 @@ FIELDS: list[dict[str, Any]] = [
     {"group": "heat", "path": "heat.alert_threshold", "type": "int", "min": 50, "max": 100, "label": "過熱提醒門檻", "when": "下一小時"},
     {"group": "heat", "path": "heat.alert_cooldown_h", "type": "int", "min": 1, "max": 72, "label": "同一幣同類提醒冷卻（小時）", "when": "立即"},
     {"group": "paper", "path": "paper.kinds.rule", "type": "bool", "label": "探索規則交易員", "when": "下一輪紙上交易"},
+    {"group": "paper", "path": "paper.kinds.rule_sl20", "type": "bool", "label": "探索規則的止損 20% 版本", "when": "下一輪紙上交易"},
+    {"group": "paper", "path": "paper.kinds.follow_long", "type": "bool", "label": "長期跟單（7～14 天重選）", "when": "下一輪紙上交易"},
+    {"group": "paper", "path": "paper.kinds.follow_short", "type": "bool", "label": "短期跟單（對照組）", "help": "盲測粗測虧損，用來對照長期跟單",
+     "when": "下一輪紙上交易"},
     {"group": "paper", "path": "paper.kinds.heat", "type": "bool", "label": "過熱分數交易員", "help": "盲測判定：每筆平均為負，照做會虧", "when": "下一輪紙上交易"},
     {"group": "paper", "path": "paper.kinds.lab", "type": "bool", "label": "事件實驗室規則", "when": "下一輪紙上交易"},
     {"group": "paper", "path": "paper.kinds.ml", "type": "bool", "label": "機器學習模型", "when": "下一輪紙上交易"},
@@ -101,7 +105,8 @@ def apply(raw: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
 DEFAULTS: dict[str, Any] = {
     "sync.oi5m_scope": "focus", "heat.sentiment_all": True, "heat.liq_all_every_min": 60, "heat.ls_all_every_min": 360,
     "sync.derivs_max_sec": 60, "heat.watchlist": [], "heat.top_n": 10, "heat.alert_threshold": 80, "heat.alert_cooldown_h": 6,
-    "paper.kinds.rule": True, "paper.kinds.heat": True, "paper.kinds.lab": True, "paper.kinds.ml": True, "paper.kinds.twin": True,
+    "paper.kinds.rule": True, "paper.kinds.rule_sl20": True, "paper.kinds.follow_long": True, "paper.kinds.follow_short": True,
+    "paper.kinds.heat": True, "paper.kinds.lab": True, "paper.kinds.ml": True, "paper.kinds.twin": True,
     "paper.kinds.llm": True, "heat.paper_thresholds": [80, 90], "chat.model": "claude", "chat.daily_calls": 500, "chat.max_rounds": 12,
     "chat.max_calls": 40, "background.priority": "idle", "background.threads": 2,
 }

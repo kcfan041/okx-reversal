@@ -466,3 +466,16 @@ def test_follow_trader_live_copies_picked(tmp_path):
     assert len(d) == 1 and d[0][0] == "6h_sl20pct" and json.loads(d[0][1])["_follow_src"] == "winner"
     pk = con.execute("SELECT picks FROM follow_picks WHERE trader_id = 'follow_t'").fetchone()[0]
     assert json.loads(pk)[0]["trader_id"] == "winner"
+
+
+def test_web_follow_endpoint(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from okxrev.web.app import create_app
+    cfg = make_cfg(tmp_path)
+    con = paper.connect(cfg)
+    con.execute("INSERT INTO follow_picks VALUES ('follow_7d_60d_top3', 1000, '[{\"trader_id\": \"rule04_3d\", \"score\": 0.1, \"n\": 25}]', 1)")
+    con.close()
+    c = TestClient(create_app(cfg))
+    d = c.get("/api/paper/follow?trader=follow_7d_60d_top3").json()
+    assert d["picks"][0]["picks"][0]["trader_id"] == "rule04_3d" and d["set"]["top"] == 3 and d["next_repick"]
+    assert c.get("/api/paper/follow?trader=../x").status_code == 400

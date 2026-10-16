@@ -1091,7 +1091,7 @@ async function loadScan(refresh) {
 }
 
 /* ---------------- paper trading ---------------- */
-const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則" };
+const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單" };
 const EXIT_WHY = { time: "到期", stop: "止損", liquidation: "強平", stale: "資料中斷", "data gap": "資料缺口" };
 let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {};
 
@@ -1143,10 +1143,37 @@ function renderMarket(m) {
   el.innerHTML = parts.join("；") + (tilt ? `<br>${tilt}` : "");
 }
 
+let ppLastBoard = null;
+const ppKindOk = (r, k) => !k || (k === "sl20" ? r.trader_id.endsWith("_sl20")
+  : k === "rule" ? r.kind === "rule" && !r.trader_id.endsWith("_sl20")
+  : k === "model" ? ["ml", "llm"].includes(r.kind) || r.trader_id.startsWith("twin")
+  : k === "random" ? r.trader_id.startsWith("random") : r.kind === k);
+document.querySelectorAll('input[name="pp-kind"]').forEach((x) => x.addEventListener("change", () => ppLastBoard && renderBoard(...ppLastBoard)));
+
+async function showFollow(tid) {
+  const el = $("#pp-follow");
+  if (!tid || !tid.startsWith("follow_")) { el.style.display = "none"; return; }
+  const d = await api(`/api/paper/follow?trader=${encodeURIComponent(tid)}&src=${ppSrc()}`).catch((e) => ({ error: e.message }));
+  el.style.display = "";
+  if (d.error) { el.innerHTML = `<span class="neg">${esc(d.error)}</span>`; return; }
+  const fs = d.set || {};
+  const cur = d.picks[0];
+  const hist = d.picks.slice(0, 15).map((p) => `<tr><td>${utc(p.period_ts)}</td><td class="l">${p.picks.length ? p.picks.map((x) => `${esc(x.trader_id)} <span class="muted">${pct(x.score, 2)}（${x.n}）</span>`).join("、") : '<span class="muted">累積中（資料不足，不下單）</span>'}</td></tr>`).join("");
+  const src = (d.by_source || []).map((x) => `${esc(x.trader_id)} ${x.n} 筆 ${pctC(x.mean, 2)}`).join("、");
+  el.innerHTML = `<h3>${esc(tid)} ${fs.short ? '<span class="badge warn">短期對照</span>' : ""}</h3>
+    <div class="muted">每 ${fs.step_h >= 24 ? fs.step_h / 24 + " 天" : fs.step_h + " 小時"}重選；回看 ${fs.look_h / 24} 天；跟前 ${fs.top} 名（至少 ${fs.min_n} 筆，排名用扣同期隨機的每筆平均）；止損 20%
+      ${d.next_repick && ppSrc() === "live" ? `；下次重選 ${utc(d.next_repick)} UTC` : ""}</div>
+    <div>目前跟：${cur ? (cur.picks.length ? cur.picks.map((x) => `<b>${esc(x.trader_id)}</b>`).join("、") : '<span class="muted">累積中</span>') : '<span class="muted">尚未重選</span>'}</div>
+    ${src ? `<div class="muted">已平倉來源：${src}</div>` : ""}
+    <div class="scroll" style="max-height:220px"><table><thead><tr><th>重選時間</th><th class="l">選中（分數、筆數）</th></tr></thead><tbody>${hist || '<tr><td colspan="2" class="muted">尚無紀錄</td></tr>'}</tbody></table></div>`;
+}
+
 function renderBoard(lb, market) {
+  ppLastBoard = [lb, market];
   const book = $("#pp-book").value;
   if (market !== undefined) renderMarket(market);
-  const rows = lb.map((r) => ({ ...r, b: r[book] || {} }));
+  const kind = (document.querySelector('input[name="pp-kind"]:checked') || {}).value || "";
+  const rows = lb.filter((r) => ppKindOk(r, kind)).map((r) => ({ ...r, b: r[book] || {} }));
   const key = (r) => (r.trader_id.startsWith("random") ? -1e6 : sameDay(r) ?? (r.b.n ? -1e3 + (r.b.mean ?? 0) : -1e9));
   rows.sort((a, b) => key(b) - key(a));
   table($("#pp-board"), [
@@ -1163,7 +1190,7 @@ function renderBoard(lb, market) {
     { t: "強平", f: (r) => (r.b.liquidations ? `<span class="neg">${r.b.liquidations}</span>` : 0) },
     { t: "勝過隨機", f: (r) => (r.vs_random ? `${pctC(r.vs_random.diff, 2)} t=${num(r.vs_random.t, 1)} ${r.vs_random.significant ? '<span class="badge ok">顯著</span>' : ""}` : "-") },
     ...diagCols(groupNames(lb)),
-  ], rows, { onClick: (r) => { ppFilter = ppFilter === r.trader_id ? null : r.trader_id; loadPaperPositions(); loadPaperEquity(); } });
+  ], rows, { onClick: (r) => { ppFilter = ppFilter === r.trader_id ? null : r.trader_id; loadPaperPositions(); loadPaperEquity(); showFollow(ppFilter); } });
 }
 
 async function loadReplay() {
@@ -1178,7 +1205,7 @@ async function loadReplay() {
   const m = r.meta;
   $("#pp-src-meta").textContent = `${m.start} ～ ${m.end}，${m.n_insts} 個合約，${fmtN(m.signals)} 個決策，產生於 ${m.generated_at}（耗時 ${Math.round(m.elapsed_sec / 60)} 分）`;
   $("#pp-replay-note").innerHTML = `<ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
-  const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab"].includes(x.kind));
+  const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab", "follow"].includes(x.kind));
   rules.sort((a, b) => (sameDay(b) ?? -9) - (sameDay(a) ?? -9));
   table($("#pp-replay-cmp"), [
     { t: "交易員", cls: "l wrap", f: (x) => `<b>${esc(x.trader_id)}</b>${x.profitable ? ' <span class="badge ok">有效</span>' : ""}<div class="muted">${esc(x.label)}</div>` },
