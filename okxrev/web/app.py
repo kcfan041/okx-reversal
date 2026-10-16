@@ -701,7 +701,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         try:
             if kind == "llm":
                 df = con.execute("SELECT d.*, c.verdict, c.cost FROM decisions d LEFT JOIN llm_calls c USING (decision_id) "
-                                 "WHERE d.trader_id LIKE 'llm_%' ORDER BY d.bar_ts DESC LIMIT ?", [max(1, min(limit, 2000))]).df()
+                                 "WHERE d.trader_id LIKE 'llm_%' OR d.trader_id LIKE 'llmb_%' ORDER BY d.bar_ts DESC LIMIT ?", [max(1, min(limit, 2000))]).df()
             else:
                 df = con.execute("SELECT * FROM decisions ORDER BY bar_ts DESC LIMIT ?", [max(1, min(limit, 2000))]).df()
         finally:

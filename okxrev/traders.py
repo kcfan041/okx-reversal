@@ -418,6 +418,26 @@ class LLMReviewer(Trader):
         return llm.review(ctx, self.cfg, sigs)
 
 
+class LLMBatchReviewer(LLMReviewer):
+    """Like LLMReviewer, but all candidates of the same bar go to the LLM in one call and it picks which to take."""
+    kind = "llm"
+
+    def __init__(self, cfg: Config, inner: Trader):
+        super().__init__(cfg, inner)
+        self.trader_id = f"llmb_{inner.trader_id}"
+        self.label = f"LLM 批次審核（同一根 K 線一起比較）：{inner.label}"
+
+    def params(self) -> dict[str, Any]:
+        return {**super().params(), "batch": True}
+
+    def review(self, ctx: Context, sigs: list[Signal]) -> list[Signal]:
+        from okxrev import llm
+        if not sigs:
+            return sigs
+        sigs = [s for s in sigs if not ctx.con.execute("SELECT 1 FROM decisions WHERE decision_id = ?", [s.decision_id]).fetchone()]
+        return llm.review_batch(ctx, self.cfg, sigs)
+
+
 def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     from okxrev import discover, llm, ml
     out: list[Trader] = []
@@ -468,6 +488,8 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
             best.append(ModelTrader(cfg, "ml"))
         for t in best:
             out.append(LLMReviewer(cfg, t))
+        if kinds.get("llm_batch", True) and kinds["ml"] and ml.has_model(cfg, "ml"):
+            out.append(LLMBatchReviewer(cfg, ModelTrader(cfg, "ml")))
     from okxrev import follow
     out += follow.traders(kinds)
     if which:

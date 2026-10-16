@@ -40,6 +40,13 @@ FIELDS: list[dict[str, Any]] = [
     {"group": "paper", "path": "paper.kinds.ml", "type": "bool", "label": "機器學習模型", "when": "下一輪紙上交易"},
     {"group": "paper", "path": "paper.kinds.twin", "type": "bool", "label": "你的分身", "when": "下一輪紙上交易"},
     {"group": "paper", "path": "paper.kinds.llm", "type": "bool", "label": "LLM 審核", "help": "會呼叫 .env 設定的 LLM", "when": "下一輪紙上交易"},
+    {"group": "paper", "path": "paper.kinds.llm_batch", "type": "bool", "label": "LLM 批次審核（同一根 K 線一起比較）", "when": "下一輪紙上交易"},
+    {"group": "paper", "path": "paper.llm.max_per_tick", "type": "int", "min": 1, "max": 30, "label": "LLM 每輪最多呼叫次數",
+     "help": "每次約 6 秒；本輪 LLM 總時間另有上限", "when": "下一輪紙上交易"},
+    {"group": "paper", "path": "paper.llm.max_per_bar", "type": "int", "min": 1, "max": 10, "label": "LLM 單筆審核：每根 K 線最多幾筆",
+     "when": "下一輪紙上交易"},
+    {"group": "paper", "path": "paper.llm.stale_min", "type": "int", "min": 5, "max": 240, "label": "比最新 K 線早幾分鐘以上的訊號不送審",
+     "help": "暫停後補跑的舊訊號", "when": "下一輪紙上交易"},
     {"group": "paper", "path": "heat.paper_thresholds", "type": "intlist", "min": 50, "max": 100, "label": "過熱交易員門檻", "when": "下一輪紙上交易"},
     {"group": "paper", "path": "paper.books.A.equity", "type": "float", "min": 100, "max": 1e7, "label": "帳本 A 起始資金（U）",
      "help": "只影響新建立的帳本；已有的帳本不重設", "when": "新帳本"},
@@ -107,7 +114,8 @@ DEFAULTS: dict[str, Any] = {
     "sync.derivs_max_sec": 60, "heat.watchlist": [], "heat.top_n": 10, "heat.alert_threshold": 80, "heat.alert_cooldown_h": 6,
     "paper.kinds.rule": True, "paper.kinds.rule_sl20": True, "paper.kinds.follow_long": True, "paper.kinds.follow_short": True,
     "paper.kinds.heat": True, "paper.kinds.lab": True, "paper.kinds.ml": True, "paper.kinds.twin": True,
-    "paper.kinds.llm": True, "heat.paper_thresholds": [80, 90], "chat.model": "claude", "chat.daily_calls": 500, "chat.max_rounds": 12,
+    "paper.kinds.llm": True, "paper.kinds.llm_batch": True, "paper.llm.max_per_tick": 8, "paper.llm.max_per_bar": 2,
+    "paper.llm.stale_min": 15, "heat.paper_thresholds": [80, 90], "chat.model": "claude", "chat.daily_calls": 500, "chat.max_rounds": 12,
     "chat.max_calls": 40, "background.priority": "idle", "background.threads": 2,
 }
 

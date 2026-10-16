@@ -162,7 +162,10 @@ paper:
     max_cost_usd_per_day: 1000.0
     price_in_per_1k: 0.00015
     price_out_per_1k: 0.0006
-    max_per_tick: 4
+    max_per_tick: 8
+    max_per_bar: 2
+    stale_min: 15
+    max_sec: 50
     timeout_sec: 20
 
 charts:

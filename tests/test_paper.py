@@ -170,7 +170,7 @@ def test_rule_and_random_traders_deterministic(tmp_path):
 
 def test_llm_review_caps_and_parse(tmp_path, monkeypatch):
     cfg = make_cfg(tmp_path)
-    cfg = cfg.copy_with({"paper": {"llm": {"max_calls_per_day": 2, "max_per_tick": 5, "max_cost_usd_per_day": 1}}})
+    cfg = cfg.copy_with({"paper": {"llm": {"max_calls_per_day": 2, "max_per_tick": 5, "max_cost_usd_per_day": 1, "stale_min": 240}}})
     cfg.paths = Paths(root=tmp_path, db=tmp_path / "okx.duckdb", logs=tmp_path / "logs", results=tmp_path / "r", lock=tmp_path / "l")
     (tmp_path / ".env").write_text("LLM_BASE_URL=http://x/v1\nLLM_API_KEY=k\nLLM_MODEL=m\n", encoding="utf-8")
     con = paper.connect(cfg)
@@ -194,9 +194,10 @@ def test_llm_review_caps_and_parse(tmp_path, monkeypatch):
     g = bars([100.0] * 30)
     c = ctx_for(cfg, con, g, int(g.index[-1]), [])
     sigs = [Signal("llm_x", "AAA", int(g.index[i]), "long", "1h", 1.0 - i / 100, "rule", features={"atr": 0.01}) for i in (20, 21, 22)]
-    out = llm.review(c, cfg, sigs, session=S())
-    assert [s.action for s in out] == ["enter", "skip_llm", "skip_llm"]
-    assert "已達上限" in out[2].reason and "失敗" in out[1].reason
+    out = {s.bar_ts: s for s in llm.review(c, cfg, sigs, session=S())}
+    o = [out[int(g.index[i])] for i in (22, 21, 20)]
+    assert [s.action for s in o] == ["enter", "skip_llm", "skip_llm"]
+    assert "每日呼叫或費用上限" in o[2].reason and "失敗" in o[1].reason
     n, cost = llm.usage_today(con)
     assert n == 2 and cost == pytest.approx(2 * (1.0 * 0.00015 + 0.1 * 0.0006))
     assert llm.parse('前言 {"decision":"reject","confidence":0.3,"reason":"x"}')[0] == "reject"
@@ -479,3 +480,84 @@ def test_web_follow_endpoint(tmp_path, monkeypatch):
     d = c.get("/api/paper/follow?trader=follow_7d_60d_top3").json()
     assert d["picks"][0]["picks"][0]["trader_id"] == "rule04_3d" and d["set"]["top"] == 3 and d["next_repick"]
     assert c.get("/api/paper/follow?trader=../x").status_code == 400
+
+
+def _llm_env(tmp_path, extra=None):
+    cfg = make_cfg(tmp_path)
+    cfg = cfg.copy_with({"paper": {"llm": {"max_calls_per_day": 100, "max_per_tick": 8, "max_per_bar": 2, "stale_min": 15, "max_sec": 60,
+                                           **(extra or {})}}})
+    cfg.paths = Paths(root=tmp_path, db=tmp_path / "okx.duckdb", logs=tmp_path / "logs", results=tmp_path / "r", lock=tmp_path / "l")
+    (tmp_path / ".env").write_text("LLM_BASE_URL=http://x/v1\nLLM_API_KEY=k\nLLM_MODEL=m\n", encoding="utf-8")
+    return cfg
+
+
+class _Resp:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"choices": [{"message": {"content": self.text}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+
+
+class _Sess:
+    def __init__(self, answer):
+        self.answer, self.bodies = answer, []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.bodies.append(json)
+        return _Resp(self.answer(json) if callable(self.answer) else self.answer)
+
+
+def test_llm_stale_and_per_bar_limits(tmp_path):
+    cfg = _llm_env(tmp_path)
+    con = paper.connect(cfg)
+    g = bars([100.0] * 40)
+    last = int(g.index[-1])
+    c = ctx_for(cfg, con, g, last, [])
+    old = [Signal("llm_x", f"O{i}", last - 30 * 60_000, "long", "1h", 0.9, "r", features={"atr": 0.01}) for i in range(3)]
+    now = [Signal("llm_x", f"N{i}", last, "long", "1h", 0.5 + i / 100, "r", features={"atr": 0.01}) for i in range(5)]
+    sess = _Sess('{"decision":"reject","confidence":0.6,"reason":"x"}')
+    out = llm.review(c, cfg, old + now, session=sess)
+    by = {s.inst_id: s for s in out}
+    assert all("補跑的舊訊號" in by[f"O{i}"].reason for i in range(3))
+    assert by["N4"].action == "reject" and by["N3"].action == "reject"
+    assert all("同一根 K 線名額已滿" in by[f"N{i}"].reason for i in range(3))
+    assert len(sess.bodies) == 2
+
+
+def test_llm_tick_budget_shared(tmp_path):
+    cfg = _llm_env(tmp_path, {"max_per_tick": 3, "max_per_bar": 5})
+    con = paper.connect(cfg)
+    g = bars([100.0] * 40)
+    last = int(g.index[-1])
+    c = ctx_for(cfg, con, g, last, [])
+    sess = _Sess('{"decision":"accept","confidence":0.6,"reason":"x"}')
+    a = llm.review(c, cfg, [Signal("llm_a", f"A{i}", last, "long", "1h", 0.5, "r") for i in range(2)], session=sess)
+    b = llm.review(c, cfg, [Signal("llm_b", f"B{i}", last, "long", "1h", 0.5, "r") for i in range(2)], session=sess)
+    assert len(sess.bodies) == 3
+    assert sum(s.action == "enter" for s in a + b) == 3 and any("本輪名額已滿" in s.reason for s in b)
+
+
+def test_llm_batch_review(tmp_path):
+    import json as _j
+    cfg = _llm_env(tmp_path)
+    con = paper.connect(cfg)
+    g = bars([100.0] * 40)
+    last = int(g.index[-1])
+    c = ctx_for(cfg, con, g, last, [])
+    sigs = [Signal("llmb_ml", f"C{i}-USDT-SWAP", last, "long", "6h_sl2atr", 0.5 + i / 100, "p", features={"atr": 0.01}) for i in range(4)]
+    sigs.append(Signal("llmb_ml", "OLD-USDT-SWAP", last - 3600_000, "long", "6h_sl2atr", 0.9, "p"))
+    sess = _Sess('{"accept": ["C2-USDT-SWAP", "c3-usdt-swap", "NOPE"], "confidence": 0.7, "reason": "y"}')
+    out = {s.inst_id: s for s in llm.review_batch(c, cfg, sigs, session=sess)}
+    assert len(sess.bodies) == 1
+    sent = _j.loads(sess.bodies[0]["messages"][1]["content"])
+    assert sent["候選數"] == 4 and "accept" in sess.bodies[0]["messages"][0]["content"]
+    assert out["C2-USDT-SWAP"].action == "enter" and out["C3-USDT-SWAP"].action == "enter"
+    assert out["C0-USDT-SWAP"].action == "reject" and "4 選 2" in out["C0-USDT-SWAP"].reason
+    assert "補跑" in out["OLD-USDT-SWAP"].reason
+    bad = _Sess("not json")
+    out2 = llm.review_batch(ctx_for(cfg, con, g, last, []), cfg, sigs[:2], session=bad)
+    assert all(s.action == "skip_llm" and "批次失敗" in s.reason for s in out2)
