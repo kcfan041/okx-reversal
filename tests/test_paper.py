@@ -444,3 +444,25 @@ def test_sl20_variant_stops_out_and_shares_signals(tmp_path):
     assert r["ruleX_3d_sl20"] == "stop"
     assert con.execute("SELECT state FROM positions WHERE book='C' AND trader_id='ruleX_3d'").fetchone()[0] == "open"
     assert paper.with_sl20("6h_sl2atr") is None and paper.EXIT_RULES["3d_sl20pct"][0] == 864
+
+
+def test_follow_trader_live_copies_picked(tmp_path):
+    from okxrev.follow import FollowTrader, period_of
+    cfg = make_cfg(tmp_path)
+    con = paper.connect(cfg)
+    H = 3_600_000
+    g = bars([100.0] * 400)
+    s = int(g.index[300])
+    p = period_of(s, 24)
+    for k in range(6):
+        con.execute("INSERT INTO positions (pos_id, trader_id, book, inst_id, side, state, entry_ts, exit_ts, ret_net, pnl) "
+                    "VALUES (?, 'winner', 'C', 'X', 'long', 'closed', ?, ?, 0.05, 0.05)", [f"w{k}", p - 10 * H, p - 5 * H + k])
+        con.execute("INSERT INTO positions (pos_id, trader_id, book, inst_id, side, state, entry_ts, exit_ts, ret_net, pnl) "
+                    "VALUES (?, 'loser', 'C', 'X', 'long', 'closed', ?, ?, -0.05, -0.05)", [f"l{k}", p - 10 * H, p - 5 * H + k])
+    fs = {"id": "follow_t", "step_h": 24, "look_h": 48, "top": 1, "min_n": 3, "short": True}
+    eng = Engine(cfg, [FollowTrader(fs), Fixed("winner", {s}, exit_rule="6h"), Fixed("loser", {s}, exit_rule="6h")], con)
+    eng.tick(ctx_for(cfg, con, g, s, [s]))
+    d = con.execute("SELECT exit_rule, features FROM decisions WHERE trader_id = 'follow_t'").fetchall()
+    assert len(d) == 1 and d[0][0] == "6h_sl20pct" and json.loads(d[0][1])["_follow_src"] == "winner"
+    pk = con.execute("SELECT picks FROM follow_picks WHERE trader_id = 'follow_t'").fetchone()[0]
+    assert json.loads(pk)[0]["trader_id"] == "winner"

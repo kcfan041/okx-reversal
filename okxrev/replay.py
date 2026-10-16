@@ -425,6 +425,50 @@ def split_groups(sig: pd.DataFrame, n: int) -> list[list[str]]:
     return [g for g in groups if g]
 
 
+def follow_replay(sig: pd.DataFrame, closed: pd.DataFrame, start: int, end: int, sets: list[dict[str, Any]]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    from okxrev.follow import replay_signals
+    return replay_signals(sig, closed, start, end, sets)
+
+
+def _closed_from(parts: list[Path], parts_con: list[Any]) -> pd.DataFrame:
+    q = "SELECT trader_id, side, exit_ts, ret_net FROM {} WHERE book = 'C' AND state = 'closed'"
+    frames = [pc.execute(q.format("positions")).df() for pc in parts_con]
+    for p in parts:
+        c = duckdb.connect(str(p), read_only=True)
+        try:
+            frames.append(c.execute(q.format("positions")).df())
+        finally:
+            c.close()
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["trader_id", "side", "exit_ts", "ret_net"])
+
+
+def _simulate_parts(cfg: Config, sig: pd.DataFrame, candles: dict[str, pd.DataFrame], start: int, end: int, rate: float,
+                    turnover: dict[str, float], workers: int, work: Path, tag: str) -> tuple[list[Path], list[Any]]:
+    """Run the engine on `sig`, split across worker processes by trader. Returns (part db files, in-memory cons)."""
+    groups = split_groups(sig, workers) if len(sig) else []
+    if workers <= 1 or len(groups) <= 1:
+        return [], [simulate(cfg, sig, candles, start, end, rate, out_path=None, turnover=turnover)] if len(sig) else []
+    to_path = work / "turnover.parquet"
+    if not to_path.exists():
+        pd.DataFrame({"inst_id": list(turnover), "turnover24": list(turnover.values())}).to_parquet(to_path, index=False)
+    sig_paths = []
+    for i, g in enumerate(groups):
+        sp = work / f"sig_{tag}_{i}.parquet"
+        sig[sig["trader_id"].isin(g)].to_parquet(sp, index=False)
+        sig_paths.append((str(cfg.source) if cfg.source else None, str(sp), str(work / f"part_{tag}_{i}.duckdb"), start, end, rate,
+                          f"[{tag}w{i}] ", cfg.paper["resolved_notional"]))
+    import gc
+    gc.collect()
+    from concurrent.futures import ProcessPoolExecutor
+    import os
+    from okxrev.web.tasks import THREAD_VARS
+    for k in THREAD_VARS:
+        os.environ.setdefault(k, "1")
+    log.info("simulate %s: %d workers, groups %s", tag, len(groups), [len(g) for g in groups])
+    with ProcessPoolExecutor(max_workers=len(groups)) as ex:
+        return [Path(p) for p in ex.map(_worker, sig_paths)], []
+
+
 def run(cfg: Config, traders_: list[Any] | None = None, progress: Callable[[int, int], None] | None = None,
         candles: dict[str, pd.DataFrame] | None = None, feats: dict[str, pd.DataFrame] | None = None,
         workers: int | None = None) -> dict[str, Any]:
@@ -440,6 +484,7 @@ def run(cfg: Config, traders_: list[Any] | None = None, progress: Callable[[int,
     from okxrev.paper import your_median_notional
     cfg = cfg.copy_with({"paper": {"resolved_notional": your_median_notional(cfg) or 2000.0}})
     trs = traders_ if traders_ is not None else replay_traders(cfg)
+    follow_sets = [t.fs for t in trs if t.kind == "follow"]
     sig = precompute(cfg, trs, candles, feats, start, end)
     turnover = {i: float(np.nanmedian(f["turnover24"].to_numpy())) for i, f in feats.items() if "turnover24" in f}
     log.info("phase 1 done: %d signals from %d traders in %.0fs", len(sig), len(trs), time.monotonic() - t0)
@@ -449,32 +494,19 @@ def run(cfg: Config, traders_: list[Any] | None = None, progress: Callable[[int,
     work.mkdir(exist_ok=True)
     for p in work.glob("*"):
         p.unlink()
+    del feats
+    parts, parts_con = _simulate_parts(cfg, sig, candles, start, end, rate, turnover, workers, work, "p1")
+    picks_log = pd.DataFrame()
+    if follow_sets:
+        closed = _closed_from(parts, parts_con)
+        fsig, picks_log = follow_replay(sig, closed, start, end, follow_sets)
+        log.info("follow traders: %d copied signals from %d sets", len(fsig), len(follow_sets))
+        if len(fsig):
+            p2, c2 = _simulate_parts(cfg, fsig, candles, start, end, rate, turnover, workers, work, "p2")
+            parts += p2
+            parts_con += c2
+            sig = pd.concat([sig, fsig], ignore_index=True)
     groups = split_groups(sig, workers) if len(sig) else []
-    parts: list[Path] = []
-    if workers <= 1 or len(groups) <= 1:
-        con = simulate(cfg, sig, candles, start, end, rate, out_path=None, turnover=turnover)
-        parts_con = [con]
-    else:
-        del feats
-        sig_paths = []
-        pd.DataFrame({"inst_id": list(turnover), "turnover24": list(turnover.values())}).to_parquet(work / "turnover.parquet", index=False)
-        for i, g in enumerate(groups):
-            sp = work / f"sig_{i}.parquet"
-            sig[sig["trader_id"].isin(g)].to_parquet(sp, index=False)
-            sig_paths.append((str(cfg.source) if cfg.source else None, str(sp), str(work / f"part_{i}.duckdb"), start, end, rate, f"[w{i}] ",
-                              cfg.paper["resolved_notional"]))
-        del candles
-        import gc
-        gc.collect()
-        from concurrent.futures import ProcessPoolExecutor
-        import os
-        from okxrev.web.tasks import THREAD_VARS
-        for k in THREAD_VARS:
-            os.environ.setdefault(k, "1")
-        log.info("phase 2: %d workers, groups %s", len(groups), [len(g) for g in groups])
-        with ProcessPoolExecutor(max_workers=len(groups)) as ex:
-            parts = [Path(p) for p in ex.map(_worker, sig_paths)]
-        parts_con = []
     if out.exists():
         out.unlink()
     con = duckdb.connect(str(out))
@@ -495,6 +527,10 @@ def run(cfg: Config, traders_: list[Any] | None = None, progress: Callable[[int,
             for t in tables:
                 con.execute(f"INSERT INTO {t} SELECT * FROM part.{t}")
             con.execute("DETACH part")
+        if len(picks_log):
+            con.register("_pk", picks_log.assign(created=db.now_ms()))
+            con.execute("INSERT OR REPLACE INTO follow_picks SELECT trader_id, period_ts, picks, created FROM _pk")
+            con.unregister("_pk")
         n_dec = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
         meta = {"start": rc["start"], "end": rc["end"], "n_insts": int(sig["inst_id"].nunique()) if len(sig) else 0,
                 "funding_rate_assumed": rate, "generated_at": ms_to_str(db.now_ms()), "elapsed_sec": round(time.monotonic() - t0, 1),

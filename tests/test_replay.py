@@ -248,3 +248,52 @@ def test_parallel_equals_single(tmp_path):
     assert len(a) > 30
     pd.testing.assert_frame_equal(a, b)
     pd.testing.assert_frame_equal(ea, eb)
+
+
+def test_replay_with_follow_trader(tmp_path):
+    from okxrev.config import parse_utc_ms
+    from okxrev.follow import FollowTrader
+    cfg = make_cfg(tmp_path)
+    start = parse_utc_ms("2023-11-15")
+    g = bars(2400, seed=3, t0=start - 86_400_000)
+    f = pd.DataFrame({"turnover24": 1e8, "r24h": 0.0}, index=g.index)
+    fs = {"id": "follow_test", "step_h": 24, "look_h": 48, "top": 1, "min_n": 3, "short": True}
+    trs = [Every("up", 7, "long", "1h"), Every("dn", 11, "short", "1h"), Every("random_long_1h", 5, "long", "1h"), FollowTrader(fs)]
+    replay.run(cfg, traders_=trs, candles={"AAA": g}, feats={"AAA": f}, workers=1)
+    con = duckdb.connect(str(replay.out_db_path(cfg)), read_only=True)
+    try:
+        picks = con.execute("SELECT period_ts, picks FROM follow_picks WHERE trader_id = 'follow_test' ORDER BY 1").fetchall()
+        fp = con.execute("SELECT p.entry_ts, p.entry_px, p.stop_px, p.side, d.exit_rule, d.features FROM positions p JOIN decisions d USING (decision_id) "
+                         "WHERE p.trader_id = 'follow_test' AND p.book = 'C'").df()
+        src = con.execute("SELECT trader_id, bar_ts FROM decisions WHERE trader_id IN ('up', 'dn')").df()
+    finally:
+        con.close()
+    import json
+    assert picks and picks[0][0] <= start
+    chosen = [json.loads(p)[0]["trader_id"] for _, p in picks if json.loads(p)]
+    assert chosen and set(chosen) <= {"up", "dn"}
+    assert len(fp) > 0 and (fp["exit_rule"] == "1h_sl20pct").all()
+    sgn = np.where(fp["side"] == "long", 1.0, -1.0)
+    assert np.allclose(fp["stop_px"], fp["entry_px"] * (1 - sgn * 0.20))
+    for r in fp.itertuples():
+        feats = json.loads(r.features)
+        assert feats["_follow_src"] in {"up", "dn"}
+
+
+def test_follow_rank_uses_only_past_and_excludes():
+    from okxrev.follow import rank
+    H = 3_600_000
+    rows = []
+    for k in range(10):
+        rows.append(("good", "long", 100 * H + k, 0.05))
+        rows.append(("good_sl20", "long", 100 * H + k, 0.06))
+        rows.append(("bad", "long", 100 * H + k, -0.02))
+        rows.append(("random_long_1h", "long", 100 * H + k, 0.01))
+        rows.append(("llm_good", "long", 100 * H + k, 0.5))
+        rows.append(("follow_x", "long", 100 * H + k, 0.5))
+        rows.append(("future", "long", 200 * H + k, 0.9))
+    df = pd.DataFrame(rows, columns=["trader_id", "side", "exit_ts", "ret_net"])
+    r = rank(df, 150 * H, 100, 5, 5)
+    assert [x["trader_id"] for x in r] == ["good_sl20"]
+    assert r[0]["score"] == pytest.approx(0.05)
+    assert rank(df, 150 * H, 100, 5, 20) == []

@@ -468,6 +468,8 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
             best.append(ModelTrader(cfg, "ml"))
         for t in best:
             out.append(LLMReviewer(cfg, t))
+    from okxrev import follow
+    out += follow.traders(kinds)
     if which:
         out = [t for t in out if t.trader_id in which or t.kind in which]
     return out

@@ -102,6 +102,13 @@ CREATE TABLE IF NOT EXISTS ticks (
     n_closed    INTEGER,
     note        VARCHAR
 );
+CREATE TABLE IF NOT EXISTS follow_picks (
+    trader_id VARCHAR,
+    period_ts BIGINT,
+    picks     VARCHAR,
+    created   BIGINT,
+    PRIMARY KEY (trader_id, period_ts)
+);
 CREATE TABLE IF NOT EXISTS llm_calls (
     ts        BIGINT,
     trader_id VARCHAR,
