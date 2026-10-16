@@ -221,8 +221,7 @@ async function confirmable(path, label) {
   } catch (e) { toast(e.message, true); return null; }
 }
 $("#btn-run").addEventListener("click", async () => { await confirmable("/api/task/run"); setTimeout(() => { loadTaskBox(); loadLog(); }, 800); });
-$("#btn-pause").addEventListener("click", () => collectSet("pause", "flag"));
-$("#btn-stop").addEventListener("click", () => collectSet("pause", "task"));
+$("#btn-pause").addEventListener("click", () => collectSet("pause"));
 $("#btn-resume").addEventListener("click", () => collectSet("resume"));
 
 /* ---------------- data collection switch ---------------- */
@@ -233,25 +232,26 @@ function renderCollect(s) {
   const b = $("#collect-sw");
   if (!s) { b.textContent = "資料收集：?"; return; }
   const taskOff = s.task && s.task.state === "Disabled";
-  b.classList.toggle("off", !!s.paused);
-  b.textContent = s.paused ? `資料收集：已${s.mode === "task" || taskOff ? "停止" : "暫停"}（${hoursText(s.hours)}）` : "資料收集：執行中";
+  b.classList.toggle("off", !!s.paused || !!taskOff);
+  b.textContent = s.paused ? `資料收集：已暫停（${hoursText(s.hours)}）` : taskOff ? "資料收集：排程已停用" : "資料收集：執行中";
   const lost = (s.lost || []).map((f) => `${f.name}（約 ${hoursText(f.missing_h)} 無法補回）`).join("、");
-  const html = s.paused
-    ? `<span class="badge bad">已${s.mode === "task" ? "完全停止" : "暫停"}</span> 自 ${utc(s.since)} UTC，已 ${hoursText(s.hours)}${s.task ? `；Windows 排程：${esc(s.task.state || "-")}` : ""}${lost ? `<br>恢復後無法補回：${esc(lost)}` : ""}`
-    : `<span class="badge ok">執行中</span>${s.task ? ` Windows 排程：${esc(s.task.state || "-")}` : ""}${taskOff ? ' <span class="warn">（排程被停用，但沒有暫停旗標；按「恢復收集」重新啟用）</span>' : ""}`;
+  const offHint = taskOff ? '<br><span class="warn">Windows 排程目前是停用狀態，資料不會收集；請以系統管理員身分開 PowerShell 執行 <code>Enable-ScheduledTask -TaskName okx-reversal-sync</code></span>' : "";
+  const html = (s.paused
+    ? `<span class="badge bad">已暫停</span> 自 ${utc(s.since)} UTC，已 ${hoursText(s.hours)}${lost ? `<br>恢復後無法補回：${esc(lost)}` : ""}`
+    : `<span class="badge ok">執行中</span>`) + offHint;
   if ($("#ctrl-collect")) $("#ctrl-collect").innerHTML = html;
 }
 async function loadCollect() {
   try { renderCollect(await api("/api/collect")); } catch { renderCollect(null); }
 }
-async function collectSet(op, mode) {
-  if (op === "pause" && mode === "task" && !confirm("完全停止：暫停收集並停用 Windows 排程。確定？")) return;
+async function collectSet(op) {
+  if (op === "pause" && !confirm("暫停資料收集？\n同步、紙上交易、過熱更新與提醒都會停止；網頁的即時查詢不受影響。")) return;
   if (op === "resume" && collectState && collectState.paused) {
     const lost = (collectState.lost || []).map((f) => f.name).join("、");
     if (!confirm(`恢復資料收集？已停 ${hoursText(collectState.hours)}，下一次同步會補回可回補的資料${lost ? `；${lost} 有一段無法補回` : ""}。`)) return;
   }
   try {
-    const r = await post(op === "pause" ? `/api/collect/pause?mode=${mode}` : "/api/collect/resume");
+    const r = await post(op === "pause" ? "/api/collect/pause" : "/api/collect/resume");
     toast(r.message, !r.ok);
     renderCollect(r);
   } catch (e) { toast(e.message, true); }
@@ -259,9 +259,7 @@ async function collectSet(op, mode) {
 }
 $("#collect-sw").addEventListener("click", () => {
   if (!collectState) return;
-  if (collectState.paused) return collectSet("resume");
-  const mode = confirm("暫停資料收集？\n按「確定」只暫停（排程照常觸發但立即結束）；\n要連 Windows 排程一起停用，請到「同步控制」按「完全停止」。") ? "flag" : null;
-  if (mode) collectSet("pause", mode);
+  collectSet(collectState.paused ? "resume" : "pause");
 });
 loadCollect();
 setInterval(() => { if (!document.hidden) loadCollect(); }, 30000);

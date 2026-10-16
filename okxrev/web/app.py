@@ -192,29 +192,17 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return ok(collect.state(cfg, _task_cached))
 
     @app.post("/api/collect/pause")
-    def collect_pause(mode: str = "flag") -> JSONResponse:
+    @app.post("/api/task/pause")
+    def collect_pause() -> JSONResponse:
         from okxrev import collect
-        if mode not in ("flag", "task"):
-            raise HTTPException(400, "bad mode")
-        collect_cache["task"] = None
-        return ok(collect.pause(cfg, mode, "web", tasks.set_task_enabled if mode == "task" else None))
+        return ok(collect.pause(cfg, "web"))
 
     @app.post("/api/collect/resume")
+    @app.post("/api/task/resume")
     def collect_resume() -> JSONResponse:
         from okxrev import collect
         collect_cache["task"] = None
-        return ok(collect.resume(cfg, tasks.set_task_enabled, tasks.task_info))
-
-    @app.post("/api/task/pause")
-    def task_pause() -> JSONResponse:
-        from okxrev import collect
-        return ok(collect.pause(cfg, "flag", "web"))
-
-    @app.post("/api/task/resume")
-    def task_resume() -> JSONResponse:
-        from okxrev import collect
-        collect_cache["task"] = None
-        return ok(collect.resume(cfg, tasks.set_task_enabled, tasks.task_info))
+        return ok(collect.resume(cfg, _task_cached))
 
     @app.post("/api/sync/only")
     def sync_only(req: OnlyReq) -> JSONResponse:

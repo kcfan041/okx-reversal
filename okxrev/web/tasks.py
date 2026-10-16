@@ -85,12 +85,6 @@ def task_info() -> dict[str, Any]:
     return d
 
 
-def set_task_enabled(enabled: bool) -> tuple[bool, str]:
-    cmd = "Enable-ScheduledTask" if enabled else "Disable-ScheduledTask"
-    code, out = _ps(f"{cmd} -TaskName '{TASK_NAME}' -ErrorAction Stop | Out-Null")
-    return code == 0, out.strip()[:300]
-
-
 def sync_running(cfg: Config) -> bool:
     lock = FileLock(str(cfg.paths.lock), timeout=0)
     try:
