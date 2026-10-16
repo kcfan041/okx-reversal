@@ -152,26 +152,40 @@ class DerivSync:
                    backfill_done = excluded.backfill_done, last_run = excluded.last_run""", [key[0], key[1], n, o, d, last])
         self.dirty.clear()
 
-    def funding(self, inst: str, max_pages: int = 5) -> None:
+    def funding(self, inst: str, max_pages: int = 5, backfill: bool = True) -> None:
+        """Newest page; with `backfill`, also page older history (the history pass in `run` uses funding_history)."""
         newest, oldest, done, _ = self._state(inst, "funding")
         rows = fetch_funding(self.client, inst)
         self.n_req += 1
         self._write("funding", rows)
         keys = [r[1] for r in rows]
-        if not done:
-            after = min(keys) if keys else oldest
-            for _ in range(max_pages):
-                if after is None:
-                    break
-                page = fetch_funding(self.client, inst, after=after)
-                self.n_req += 1
-                if not page:
-                    done = True
-                    break
-                self._write("funding", page)
-                keys += [r[1] for r in page]
-                after = min(r[1] for r in page)
+        if not done and backfill:
+            done, more = self._funding_pages(inst, min(keys) if keys else oldest, max_pages)
+            keys += more
         self._save(inst, "funding", keys, done)
+
+    def _funding_pages(self, inst: str, after: int | None, max_pages: int) -> tuple[bool, list[int]]:
+        keys: list[int] = []
+        for _ in range(max_pages):
+            if after is None:
+                break
+            page = fetch_funding(self.client, inst, after=after)
+            self.n_req += 1
+            if not page:
+                return True, keys
+            self._write("funding", page)
+            keys += [r[1] for r in page]
+            after = min(r[1] for r in page)
+        return False, keys
+
+    def funding_history(self, inst: str, max_pages: int = 5) -> None:
+        newest, oldest, done, last = self._state(inst, "funding")
+        if done or oldest is None:
+            return
+        done, keys = self._funding_pages(inst, oldest, max_pages)
+        self._save(inst, "funding", keys, done)
+        n, o, d, _ = self.states[(inst, "funding")]
+        self.states[(inst, "funding")] = (n, o, d, last)
 
     def oi(self, inst: str, period: str, max_pages: int = 3, backfill: bool = True) -> None:
         """Newest page always; then, if history is incomplete and `backfill`, page back up to max_pages."""
@@ -262,14 +276,17 @@ class DerivSync:
                     jobs.append((((now - last) / every) if last else 1e9, inst, stream))
         jobs.sort(key=lambda j: -j[0])
         fwd = [(i, s, False) for _, i, s in jobs]
-        back = [(i, s, True) for _, i, s in jobs if s in ("oi:1H", "oi:1D") and not self._state(i, s)[2]]
+        back = [(i, s, True) for _, i, s in jobs if s in ("funding", "oi:1H", "oi:1D") and not self._state(i, s)[2]]
         n_done = 0
         for inst, stream, is_back in fwd + back:
             if deadline is not None and time.monotonic() >= deadline:
                 break
             try:
                 if stream == "funding":
-                    self.funding(inst)
+                    if is_back:
+                        self.funding_history(inst)
+                    else:
+                        self.funding(inst, backfill=False)
                 elif is_back:
                     self.oi_history(inst, stream.split(":")[1])
                 else:

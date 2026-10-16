@@ -202,11 +202,11 @@ def sync_heat(cfg: Config, client: OkxClient, deadline: float | None = None, max
               focus: list[str] | None = None) -> dict[str, Any]:
     """Forward sync. Taker/mark for every instrument once an hour; L/S ratio and liquidations for `focus`
     (watchlist + current top-heat coins) every sync. The rest of the market is covered on a slower cycle
-    (heat.ls_all_every_min, default 360: one 5m L/S page holds ~8h; heat.liq_all_every_min, default 30), lowest
+    (heat.ls_all_every_min, default 360: one 5m L/S page holds ~8h; heat.liq_all_every_min, default 60), lowest
     priority, so a busy sync only delays them."""
     hc = cfg.raw.get("heat") or {}
     ls_every = int(hc.get("ls_all_every_min", 360)) * 60_000
-    liq_every = int(hc.get("liq_all_every_min", 30)) * 60_000
+    liq_every = int(hc.get("liq_all_every_min", 60)) * 60_000
     all_market = bool(hc.get("sentiment_all", True))
     if max_sec is not None:
         cap = time.monotonic() + max_sec

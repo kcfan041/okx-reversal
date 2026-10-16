@@ -99,7 +99,7 @@ def apply(raw: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
 
 
 DEFAULTS: dict[str, Any] = {
-    "sync.oi5m_scope": "focus", "heat.sentiment_all": True, "heat.liq_all_every_min": 30, "heat.ls_all_every_min": 360,
+    "sync.oi5m_scope": "focus", "heat.sentiment_all": True, "heat.liq_all_every_min": 60, "heat.ls_all_every_min": 360,
     "sync.derivs_max_sec": 60, "heat.watchlist": [], "heat.top_n": 10, "heat.alert_threshold": 80, "heat.alert_cooldown_h": 6,
     "paper.kinds.rule": True, "paper.kinds.heat": True, "paper.kinds.lab": True, "paper.kinds.ml": True, "paper.kinds.twin": True,
     "paper.kinds.llm": True, "heat.paper_thresholds": [80, 90], "chat.model": "claude", "chat.daily_calls": 500, "chat.max_rounds": 12,

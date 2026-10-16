@@ -105,7 +105,7 @@ heat:
   top_n: 10
   sentiment_all: true
   ls_all_every_min: 360
-  liq_all_every_min: 30
+  liq_all_every_min: 60
   paper: true
   paper_thresholds: [80, 90]
   paper_exits: [24h, 24h_sl10pct, 24h_sl20pct]

@@ -412,7 +412,7 @@ def _old_coverage(cfg: Config) -> dict[str, Any] | None:
     return {"from": _iv(lo), "to": _iv(hi), "n_insts": int(n or 0)}
 
 
-FRESH_EXPECT_H = {"funding": 8.0, "oi_1h": 1.0, "oi_1d": 24.0, "oi_5m": 0.25, "taker": 1.0, "mark": 1.0, "ls": 0.25, "liq": 0.5}
+FRESH_EXPECT_H = {"funding": 8.0, "oi_1h": 1.0, "oi_1d": 24.0, "oi_5m": 0.25, "taker": 1.0, "mark": 1.0, "ls": 0.25, "liq": 1.0}
 FRESH_LABEL = {"funding": "資金費率", "oi_1h": "OI 每小時", "oi_1d": "OI 每天", "oi_5m": "OI 每 5 分（關注幣）",
                "taker": "主動買賣量", "mark": "合約溢價", "ls": "多空比（關注幣）", "liq": "爆倉抓取（全市場）"}
 

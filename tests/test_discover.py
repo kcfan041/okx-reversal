@@ -145,7 +145,7 @@ def test_derivs_sync_pages(tmp_path):
     con = duckdb.connect(str(tmp_path / "d.duckdb"))
     s = derivs.DerivSync(CFG, C(), con)
     r = s.run(["AAA-USDT-SWAP"])
-    assert r["done"] == 6
+    assert r["done"] == 7
     assert con.execute("SELECT COUNT(*) FROM funding").fetchone()[0] == 2
     assert con.execute("SELECT backfill_done FROM derivs_state WHERE stream='funding'").fetchone()[0]
     assert all(con.execute("SELECT backfill_done FROM derivs_state WHERE stream LIKE 'oi:1%'").fetchall())
