@@ -521,7 +521,38 @@ $("#kl-span").addEventListener("change", () => {
   const end = fromLocalInput($("#kl-end").value) || Date.now();
   $("#kl-end").value = toLocalInput(end);
   $("#kl-start").value = toLocalInput(end - +$("#kl-span").value * 86400e3);
+  loadKline();
 });
+["#kl-start", "#kl-end"].forEach((s) => $(s).addEventListener("keydown", (e) => { if (e.key === "Enter") loadKline(); }));
+$("#kl-btc").addEventListener("change", () => { if ($("#kl-inst").value.trim()) loadKline(); });
+
+let klSeq = 0, klTimer = null;
+function klOverlay(html) {
+  let o = $("#kl-overlay");
+  if (!o) {
+    o = document.createElement("div");
+    o.id = "kl-overlay";
+    o.className = "chart-overlay";
+    $("#kl-price").parentElement.style.position = "relative";
+    $("#kl-price").parentElement.appendChild(o);
+  }
+  o.style.display = html ? "" : "none";
+  if (html) o.innerHTML = html;
+  return o;
+}
+function klBusy(on, t0) {
+  const b = $("#btn-kl");
+  b.disabled = on;
+  b.textContent = on ? "載入中…" : "載入";
+  clearInterval(klTimer);
+  if (!on) return;
+  const tick = () => {
+    const s = (performance.now() - t0) / 1000;
+    klOverlay(`<div class="spin"></div><div>載入中${s >= 1 ? `… ${s.toFixed(0)} 秒` : "…"}</div>${s >= 2 ? '<div class="muted">可能正在等同步寫入資料庫（最多約 10 秒）</div>' : ""}`);
+  };
+  tick();
+  klTimer = setInterval(tick, 250);
+}
 
 async function loadKline() {
   const inst = $("#kl-inst").value.trim().toUpperCase();
@@ -530,9 +561,22 @@ async function loadKline() {
   const st = fromLocalInput($("#kl-start").value), en = fromLocalInput($("#kl-end").value);
   if (st) q.set("start", st);
   if (en) q.set("end", en);
-  $("#kl-info").textContent = "載入中…";
+  const seq = ++klSeq;
+  const t0 = performance.now();
+  $("#kl-info").textContent = "";
+  klBusy(true, t0);
   let d;
-  try { d = await api(`/api/candles?${q}`); } catch (e) { $("#kl-info").textContent = ""; return toast(e.message, true); }
+  try { d = await api(`/api/candles?${q}`); } catch (e) {
+    if (seq !== klSeq) return;
+    klBusy(false);
+    const busy = /忙碌|busy|503/i.test(e.message);
+    klOverlay(`<div class="neg">載入失敗：${esc(e.message)}</div>${busy ? '<div class="muted">資料庫正在被同步寫入，稍後再試即可</div>' : ""}<button class="small" id="kl-retry">重試</button>`);
+    $("#kl-retry").addEventListener("click", loadKline);
+    return;
+  }
+  if (seq !== klSeq) return;
+  klBusy(false);
+  klOverlay(null);
   const c = makeCharts();
   resizeCharts();
   const candles = [], vol = [], vma = [];
@@ -564,7 +608,14 @@ async function loadKline() {
   c.p.timeScale().fitContent();
   $("#kl-start").value = toLocalInput(d.start);
   $("#kl-end").value = toLocalInput(d.end);
-  $("#kl-info").textContent = `${d.t.length.toLocaleString()} 根${(d.events || []).length ? `，${d.events.length} 個事件` : ""}`;
+  const secs = (performance.now() - t0) / 1000;
+  const days = (d.end - d.start) / 86400e3;
+  const info = $("#kl-info");
+  info.textContent = `${inst}，${days >= 1 ? num(days, days < 10 ? 1 : 0) + " 天" : Math.round(days * 24) + " 小時"}，${d.t.length.toLocaleString()} 根${(d.events || []).length ? `，${d.events.length} 個事件` : ""}；${secs.toFixed(1)} 秒，${new Date().toLocaleTimeString()} 更新`;
+  if (!d.t.length) klOverlay('<div class="muted">這段時間沒有 K 線資料</div>');
+  info.classList.remove("flash");
+  void info.offsetWidth;
+  info.classList.add("flash");
 }
 
 /* ---------------- account ---------------- */

@@ -154,3 +154,8 @@ code { background: #0b0f13; padding: 1px 5px; border-radius: 4px; }
 .collect-sw { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 12px; background: #16392f; color: #6fd3b0; border: 1px solid #2a5a4a; white-space: nowrap; cursor: pointer; }
 .collect-sw.off { background: #43201f; color: #ff8a80; border-color: #6a3330; }
 .pp-market { font-size: 13px; margin: 4px 0 8px; color: var(--muted); }
+.chart-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: rgba(15, 20, 25, 0.72); z-index: 5; font-size: 14px; text-align: center; padding: 20px; }
+.chart-overlay .spin { width: 26px; height: 26px; border: 3px solid #2a323c; border-top-color: #4aa3ff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { from { color: #ffd27a; } to { color: inherit; } }
