@@ -297,3 +297,12 @@ def test_follow_rank_uses_only_past_and_excludes():
     assert [x["trader_id"] for x in r] == ["good_sl20"]
     assert r[0]["score"] == pytest.approx(0.05)
     assert rank(df, 150 * H, 100, 5, 20) == []
+
+
+def test_follow_family_groups_variants():
+    from okxrev.follow import family
+    assert family("rule04_3d_sl20") == family("rule04_3d")
+    assert family("heat80_24h_sl10pct") == family("heat80_24h_sl20pct") == family("heat80_24h")
+    assert family("heat80_24h") != family("heat90_24h")
+    assert family("twin_you") == family("twin")
+    assert family("rule03_6h") != family("rule04_3d")
