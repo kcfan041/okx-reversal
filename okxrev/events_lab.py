@@ -436,10 +436,11 @@ def _base(rnd: pd.DataFrame, col: str, per: str, split: int, extra: np.ndarray |
 
 
 def verdict_of(valid: dict[str, Any], blind: dict[str, Any] | None, bv: float | None, bb: float | None) -> str:
-    from okxrev.discover import verdict
+    from okxrev.discover import trade_ok, verdict
     if blind is None:
-        good = valid.get("n_days", 0) >= 8 and valid.get("day_mean", -1) > max(bv or 0, 0) and (valid.get("ci95") or [-1])[0] > 0
-        pos = valid.get("n", 0) > 0 and valid.get("day_mean", -1) > max(bv or 0, 0)
+        good = (valid.get("n_days", 0) >= 8 and valid.get("day_mean", -1) > max(bv or 0, 0) and (valid.get("ci95") or [-1])[0] > 0
+                and trade_ok(valid, bv))
+        pos = valid.get("n", 0) > 0 and valid.get("day_mean", -1) > max(bv or 0, 0) and trade_ok(valid, bv)
         return "驗證通過（待盲測）" if good else "驗證期為正（待盲測）" if pos else "驗證期無效"
     return verdict(valid, blind, bv or 0.0, bb or 0.0, True)
 

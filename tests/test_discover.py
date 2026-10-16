@@ -83,14 +83,26 @@ def test_split_points_order():
 
 
 def test_verdict_rules():
-    good = {"n": 100, "n_days": 30, "day_mean": 0.01, "ci95": [0.002, 0.02]}
-    weak = {"n": 50, "n_days": 10, "day_mean": 0.002, "ci95": [-0.01, 0.01]}
-    bad = {"n": 50, "n_days": 10, "day_mean": -0.01, "ci95": [-0.02, 0.0]}
+    good = {"n": 100, "n_days": 30, "mean": 0.01, "day_mean": 0.01, "ci95": [0.002, 0.02], "book_a": 0.2}
+    weak = {"n": 50, "n_days": 10, "mean": 0.002, "day_mean": 0.002, "ci95": [-0.01, 0.01], "book_a": 0.002}
+    bad = {"n": 50, "n_days": 10, "mean": -0.01, "day_mean": -0.01, "ci95": [-0.02, 0.0], "book_a": -0.1}
     assert D.verdict(good, good, 0.0, 0.0, True) == "可用"
     assert D.verdict(good, good, 0.0, 0.0, False) == "觀察中"
     assert D.verdict(weak, weak, 0.0, 0.0, True) == "觀察中"
     assert D.verdict(good, bad, 0.0, 0.0, True) == "無效"
     assert D.verdict(good, good, 0.02, 0.0, True) == "無效"
+    day_only = {**good, "mean": -0.004, "book_a": -0.25}
+    assert D.verdict(good, day_only, 0.0, 0.0, True) == "無效"
+    no_book = {**good, "book_a": -0.01}
+    assert D.verdict(good, no_book, 0.0, 0.0, True) == "無效"
+
+
+def test_book_a_and_trade_stats():
+    ret = np.array([0.1, -0.05, 0.02])
+    ts = np.array([3, 1, 2]) * D.DAY
+    assert D.book_a(ret, ts) == pytest.approx((1 - 0.001) * (1 + 0.0004) * (1 + 0.002) - 1)
+    s = D.day_stats(np.array([0.01, 0.02, -0.03, 0.04, 0.05]), np.arange(5) * D.DAY, boot=0)
+    assert s["book_a"] > 0 and s["t_trade"] > 0 and s["mean"] == pytest.approx(0.018)
 
 
 def test_null_is_lower_for_noise():

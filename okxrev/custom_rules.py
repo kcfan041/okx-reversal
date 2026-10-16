@@ -64,7 +64,7 @@ def _summary(test: dict[str, Any], side: str, exit_: str) -> dict[str, Any]:
     c = next((x for x in test.get("combos", []) if x["side"] == side and x["exit"] == exit_), None)
     if c is None:
         return {}
-    pick = lambda s: {k: (s or {}).get(k) for k in ("n", "n_days", "day_mean", "win_rate", "ci95")}
+    pick = lambda s: {k: (s or {}).get(k) for k in ("n", "n_days", "mean", "day_mean", "win_rate", "ci95", "book_a")}
     return {"verdict": c["verdict"], "disc": pick(c.get("disc")), "valid": pick(c.get("valid")), "blind": pick(c.get("blind")) if c.get("blind") else None,
             "base_valid": c.get("base_valid"), "base_blind": c.get("base_blind"), "blind_tested": bool(test.get("blind_shown"))}
 

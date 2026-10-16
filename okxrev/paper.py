@@ -657,9 +657,14 @@ def leaderboard(con: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
         out.append(row)
     pc = pos[pos["book"] == "C"] if len(pos) else pos
     diag = diagnostics(pc)
+    from okxrev.discover import book_a
     for row in out:
         if row["trader_id"] in diag:
             row["diag"] = diag[row["trader_id"]]
+        c = pc[pc["trader_id"] == row["trader_id"]] if len(pc) else pc
+        row["book_a_ret"] = book_a(c["ret_net"].to_numpy(float), c["entry_ts"].to_numpy(np.int64)) if len(c) else None
+        v = (row.get("diag") or {}).get("vs_same_day") or {}
+        row["profitable"] = bool(len(c) and (row["C"].get("mean") or 0) > 0 and (row["book_a_ret"] or 0) > 0 and v.get("significant"))
     out.sort(key=lambda r: -(r["C"].get("day_mean") or -9) if r["C"].get("n") else 9)
     return out
 

@@ -402,6 +402,21 @@ def scan(cfg: Config, rules: list[Rule], since: int | None = None, insts: list[s
 
 
 # ---------------------------------------------------------------- stats
+BOOK_A_EQUITY = 10_000.0
+BOOK_A_FRAC = 0.02
+
+
+def book_a(ret: np.ndarray, ts: np.ndarray) -> float:
+    """Return of 'book A' (10,000U, every trade sized 2% of current equity, unlevered), trades applied in entry
+    order. Unlike day-averaged stats every trade counts once, so days with many simultaneous signals weigh in
+    proportion to how many trades they really produce."""
+    if len(ret) == 0:
+        return 0.0
+    order = np.argsort(ts, kind="stable")
+    r = np.clip(np.asarray(ret, float)[order], -1.0, None)
+    return float(np.prod(1 + BOOK_A_FRAC * r) - 1)
+
+
 def day_stats(ret: np.ndarray, ts: np.ndarray, boot: int = 500, seed: int = 0) -> dict[str, Any]:
     if len(ret) == 0:
         return {"n": 0}
@@ -409,7 +424,10 @@ def day_stats(ret: np.ndarray, ts: np.ndarray, boot: int = 500, seed: int = 0) -
     s = pd.Series(ret).groupby(day)
     dm = s.mean().to_numpy()
     out = {"n": int(len(ret)), "n_days": int(len(dm)), "mean": float(ret.mean()), "median": float(np.median(ret)),
-           "win_rate": float((ret > 0).mean()), "day_mean": float(dm.mean()), "pos_days": float((dm > 0).mean())}
+           "win_rate": float((ret > 0).mean()), "day_mean": float(dm.mean()), "pos_days": float((dm > 0).mean()),
+           "book_a": book_a(ret, ts)}
+    if len(ret) >= 5 and ret.std(ddof=1) > 0:
+        out["t_trade"] = float(ret.mean() / (ret.std(ddof=1) / np.sqrt(len(ret))))
     if len(dm) >= 5:
         if boot > 0:
             rng = np.random.default_rng(seed)
@@ -479,12 +497,20 @@ def null_scores(ev: pd.DataFrame, t_valid: int, n: int = N_SHUFFLE, seed: int = 
     return np.asarray(out)
 
 
+def trade_ok(s: dict[str, Any], b: float | None) -> bool:
+    """Per-trade checks added to every verdict: the plain per-trade mean must be positive and above the same-period
+    random mean, and book A (each trade 2% of equity, in time order) must end in profit. Day-averaged stats alone
+    can be positive while trading every signal loses money (busy days count as one day)."""
+    m = s.get("mean")
+    return m is not None and m > max(b or 0.0, 0.0) and (s.get("book_a") is None or s["book_a"] > 0)
+
+
 def verdict(valid: dict[str, Any], hold: dict[str, Any], base_valid: float, base_hold: float, beats_null: bool) -> str:
     def good(s: dict[str, Any], b: float) -> bool:
         ci = s.get("ci95")
-        return s.get("n_days", 0) >= 8 and s.get("day_mean", -1) > max(b, 0) and ci is not None and ci[0] > 0
+        return s.get("n_days", 0) >= 8 and s.get("day_mean", -1) > max(b, 0) and ci is not None and ci[0] > 0 and trade_ok(s, b)
     def pos(s: dict[str, Any], b: float) -> bool:
-        return s.get("n", 0) > 0 and s.get("day_mean", -1) > max(b, 0)
+        return s.get("n", 0) > 0 and s.get("day_mean", -1) > max(b, 0) and trade_ok(s, b)
     if good(valid, base_valid) and good(hold, base_hold) and beats_null:
         return "可用"
     if pos(valid, base_valid) and pos(hold, base_hold):

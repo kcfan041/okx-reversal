@@ -198,12 +198,16 @@ def evidence_summary(cfg: Config) -> str:
     try:
         from okxrev import replay
         cmp_ = replay.compare(cfg)
-        lb = cmp_.get("leaderboard", [])
-        sig = [r for r in lb if (r.get("vs_random") or {}).get("significant")]
-        if sig:
-            lines.append("盲測重播中顯著勝過隨機的交易員（其餘都沒有）：" + "、".join(f"{r['trader_id']}（{(r.get('label') or '')[:40]}）" for r in sig[:8]))
+        lb = [r for r in cmp_.get("leaderboard", []) if not r["trader_id"].startswith("random")]
+        win = [r for r in lb if r.get("profitable")]
+        if win:
+            lines.append("盲測重播中「每筆平均為正、帳本 A 獲利、且扣同日隨機顯著」的交易員（其餘都不符合）：" + "、".join(
+                f"{r['trader_id']}（每筆 {pc(r['C'].get('mean'))}，帳本 A {pc(r.get('book_a_ret'))}，{r['C'].get('n')} 筆）" for r in win[:8]))
         elif lb:
-            lines.append("盲測重播：沒有交易員顯著勝過隨機")
+            lines.append("盲測重播：沒有交易員同時做到每筆平均為正、帳本 A 獲利、扣同日隨機顯著")
+        lose = [r for r in lb if (r.get("diag") or {}).get("vs_same_day", {}).get("significant") and not r.get("profitable")]
+        if lose:
+            lines.append("只是「比隨機少虧」、實際照做會虧的：" + "、".join(f"{r['trader_id']}（每筆 {pc(r['C'].get('mean'))}）" for r in lose[:8]))
     except Exception:
         pass
     p = cfg.paths.results / "heat.json"
@@ -214,11 +218,12 @@ def evidence_summary(cfg: Config) -> str:
             parts = []
             for r in ok_:
                 b = r[r["best_h"]]
-                parts.append(f"{r['name']}［{r['verdict']}，做空{r['best_h'][2:]}：找門檻期 {pc(b['disc'].get('day_mean'))}、盲測 {pc(b['blind'].get('day_mean'))}，"
-                             f"隨機 {pc(b.get('base_blind'))}］")
+                parts.append(f"{r['name']}［{r['verdict']}，做空{r['best_h'][2:]}：盲測每筆 {pc(b['blind'].get('mean'))}、帳本 A {pc(b['blind'].get('book_a'))}、"
+                             f"日均 {pc(b['blind'].get('day_mean'))}，隨機每筆 {pc(b.get('base_blind'))}］")
             bad = [r["name"] for r in h.get("results", []) if r.get("verdict") == "無效"]
-            lines.append(f"過熱分數驗證（{h.get('generated_at')}）：" + ("；".join(parts) if parts else "沒有條件通過") +
-                         (f"；無效：{'、'.join(bad)}" if bad else "") + "。注意：持有 1 小時做空通常為負（過熱後常再漲一段）")
+            lines.append(f"過熱分數驗證（{h.get('generated_at')}，判定需每筆平均為正且帳本 A 獲利）：" + ("；".join(parts) if parts else "沒有條件通過") +
+                         (f"；無效：{'、'.join(bad)}" if bad else "") +
+                         "。注意：全市場同時過熱的日子做空大虧，「日均」把這些日子壓成一天，會高估；請以每筆平均與帳本 A 為準")
             rk = next((x for x in h.get("risk", []) if x["name"] == "score≥80"), None)
             if rk and rk.get("blind", {}).get("mae"):
                 m, bl = rk["blind"]["mae"], rk["blind"]

@@ -366,6 +366,19 @@ def test_leaderboard_vs_random(tmp_path):
     assert "vs_random" not in lb["random_long_1h"]
 
 
+def test_rule_ids_are_stable(tmp_path):
+    from okxrev import traders as TR
+    paths = make_cfg(tmp_path).paths
+    cfg = make_cfg(tmp_path).copy_with({"replay": {"out": str(tmp_path / "no_replay.duckdb")}})
+    cfg.paths = paths
+    a = {"key": "k|a", "exit": "6h"}
+    b = {"key": "k|b", "exit": "24h"}
+    c = {"key": "k|c", "exit": "3d"}
+    assert TR.rule_ids(cfg, [a, b]) == ["rule01_6h", "rule02_24h"]
+    assert TR.rule_ids(cfg, [c, b]) == ["rule03_3d", "rule02_24h"]
+    assert TR.rule_ids(cfg, [a]) == ["rule01_6h"]
+
+
 def test_diagnostics_concentration_same_day_and_groups():
     D = paper.DAY
     rows = []

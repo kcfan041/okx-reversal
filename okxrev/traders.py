@@ -33,16 +33,85 @@ def uhash(seed: np.uint64, ts: np.ndarray) -> np.ndarray:
     return (z >> np.uint64(11)).astype(np.float64) / float(1 << 53)
 
 
+def rule_ids(cfg: Config, results: list[dict[str, Any]]) -> list[str]:
+    """Stable trader ids for discovered rules: data/rule_ids.json maps 'key|exit' -> number for good, so a re-run of
+    discovery never gives an old number to a different rule. Seeded from the replay and live paper databases
+    (replay first, it holds the blind-test results). New rules get the next free number."""
+    import json as _json
+    p = cfg.paths.root / "data" / "rule_ids.json"
+    reg: dict[str, int] = {}
+    if p.exists():
+        try:
+            reg = {k: int(v) for k, v in _json.loads(p.read_text(encoding="utf-8")).items()}
+        except ValueError:
+            reg = {}
+    if not reg:
+        reg = _seed_rule_ids(cfg)
+    used = set(reg.values())
+    nxt = max(used, default=0) + 1
+    out = []
+    changed = False
+    for r in results:
+        k = f"{r['key']}|{r['exit']}"
+        if k not in reg:
+            while nxt in used:
+                nxt += 1
+            reg[k] = nxt
+            used.add(nxt)
+            changed = True
+        out.append(f"rule{reg[k]:02d}_{r['exit']}")
+    if changed or not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(reg, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(p)
+    return out
+
+
+def _seed_rule_ids(cfg: Config) -> dict[str, int]:
+    import json as _json
+    import re as _re
+    import duckdb
+    from okxrev import replay
+    reg: dict[str, int] = {}
+    for path in (replay.out_db_path(cfg), cfg.paper_db):
+        if not path.exists():
+            continue
+        try:
+            con = duckdb.connect(str(path), read_only=True)
+        except duckdb.Error:
+            continue
+        try:
+            rows = con.execute("SELECT trader_id, params FROM traders WHERE kind = 'rule'").fetchall()
+        except duckdb.Error:
+            rows = []
+        finally:
+            con.close()
+        for tid, prm in sorted(rows):
+            m = _re.match(r"^rule(\d+)_", tid)
+            try:
+                d = _json.loads(prm or "{}")
+            except ValueError:
+                continue
+            if not m or not d.get("key") or not d.get("exit"):
+                continue
+            k = f"{d['key']}|{d['exit']}"
+            n = int(m.group(1))
+            if k not in reg and n not in reg.values():
+                reg[k] = n
+    return reg
+
+
 class RuleTrader(Trader):
     kind = "rule"
 
-    def __init__(self, res: dict[str, Any], idx: int):
+    def __init__(self, res: dict[str, Any], idx: int | str):
         from okxrev import discover as D
         self.res = res
         rules = {r.key: r for r in D.enumerate_rules()}
         self.rule = rules[res["key"]]
         self.exit = res["exit"]
-        self.trader_id = f"rule{idx:02d}_{res['exit']}"
+        self.trader_id = idx if isinstance(idx, str) else f"rule{idx:02d}_{res['exit']}"
         self.label = f"{res['label']}（{res['exit']}，{res['verdict']}）"
         self.fresh_gap = D.FRESH_GAP
 
@@ -324,8 +393,8 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     res = discover.load(cfg) or {}
     active = [r for r in res.get("results", []) if r["verdict"] in ("可用", "觀察中")]
     exits_used = sorted({r["exit"] for r in active} | {"6h_sl2atr"})
-    for i, r in enumerate(active, 1):
-        out.append(RuleTrader(r, i))
+    for tid, r in zip(rule_ids(cfg, active), active):
+        out.append(RuleTrader(r, tid))
     from okxrev import custom_rules
     lab = custom_rules.traders(cfg)
     out += lab

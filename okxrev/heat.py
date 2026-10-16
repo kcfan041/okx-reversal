@@ -696,8 +696,10 @@ def evaluate(cfg: Config, progress: bool = True) -> dict[str, Any]:
         best = max(("s_1h", "s_6h", "s_24h"), key=lambda c: (r[c]["disc"].get("t") or -9))
         r["best_h"] = best
         dv, bv = r[best]["disc"], r[best]["blind"]
-        good = lambda s, b: s.get("n_days", 0) >= 10 and s.get("ci95") is not None and s["ci95"][0] > 0 and s.get("day_mean", -1) > (b or 0)
-        pos = lambda s, b: s.get("n", 0) > 0 and s.get("day_mean", -1) > max(b or 0, 0)
+        from okxrev.discover import trade_ok
+        good = lambda s, b: (s.get("n_days", 0) >= 10 and s.get("ci95") is not None and s["ci95"][0] > 0 and s.get("day_mean", -1) > (b or 0)
+                             and trade_ok(s, b))
+        pos = lambda s, b: s.get("n", 0) > 0 and s.get("day_mean", -1) > max(b or 0, 0) and trade_ok(s, b)
         r["verdict"] = "可用" if good(dv, r[best]["base_disc"]) and good(bv, r[best]["base_blind"]) else \
             ("觀察中" if pos(dv, r[best]["base_disc"]) and pos(bv, r[best]["base_blind"]) else "無效")
     risk = []
@@ -716,7 +718,7 @@ def evaluate(cfg: Config, progress: bool = True) -> dict[str, Any]:
                     x = e[col].to_numpy(float)
                     ok = np.isfinite(x)
                     s = day_stats(x[ok], ts_[ok], boot=300)
-                    cell[col] = {k: s.get(k) for k in ("n", "n_days", "day_mean", "win_rate", "ci95")}
+                    cell[col] = {k: s.get(k) for k in ("n", "n_days", "mean", "day_mean", "win_rate", "ci95", "book_a")}
                     cell[f"base_{col}"] = base(d, col)
             if "mae_24h" in e:
                 mae = e["mae_24h"].to_numpy(float)
@@ -737,7 +739,7 @@ def evaluate(cfg: Config, progress: bool = True) -> dict[str, Any]:
                 if ok.sum() >= 30:
                     x = (e["s_24h"].to_numpy(float) + f)[ok]
                     s = day_stats(x[np.isfinite(x)], ts_[ok][np.isfinite(x)], boot=300)
-                    cell["s_24h_with_funding"] = {k: s.get(k) for k in ("n", "n_days", "day_mean", "win_rate", "ci95")}
+                    cell["s_24h_with_funding"] = {k: s.get(k) for k in ("n", "n_days", "mean", "day_mean", "win_rate", "ci95", "book_a")}
             rr[per] = cell
         risk.append(rr)
     corr = {}
