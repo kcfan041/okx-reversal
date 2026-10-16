@@ -345,64 +345,86 @@
 </section>
 
 <!-- AI 模擬 -->
-<section id="tab-pp" class="tab">
-  <div class="panel">
-    <div class="row">
-      <button id="btn-pp-tick" class="primary">立即跑一輪</button>
-      <button id="btn-pp-train">重新訓練模型</button>
-      <button id="btn-pp-export">匯出資料（Parquet）</button>
-      <span id="pp-meta" class="muted"></span>
+<section id="tab-pp" class="tab pp-page">
+  <div class="pp-ctl">
+    <div class="seg" role="tablist" aria-label="資料來源">
+      <button data-src="live" class="on">即時</button>
+      <button data-src="replay">盲測 2024-10～2025-09</button>
     </div>
-    <details class="hint"><summary>模擬怎麼運作？</summary>每次 5 分鐘同步完成後自動跑一輪。訊號只用已收盤的 K 線，模擬成交用下一根 K 線的開盤價；不會對 OKX 下任何單。</details>
-    <pre id="pp-log" class="log short" style="display:none"></pre>
-  </div>
-  <div class="panel">
-    <div class="row">
-      <label><input type="radio" name="pp-src" value="live" checked> 即時紙上交易</label>
-      <label><input type="radio" name="pp-src" value="replay"> 舊資料盲測（2024-10 ～ 2025-09）</label>
-      <span id="pp-src-meta" class="muted"></span>
-    </div>
-    <div id="pp-replay" style="display:none">
-      <div id="pp-replay-note" class="muted"></div>
-      <h3>規則：探索時成績 vs 盲測成績 <small class="muted">（日均報酬；盲測也勝過隨機才比較可信）</small></h3>
-      <div class="scroll"><table id="pp-replay-cmp"></table></div>
+    <button id="btn-pp-tick" class="primary">立即跑一輪</button>
+    <div class="menu">
+      <button id="btn-pp-more" aria-haspopup="true" aria-expanded="false">更多 ▾</button>
+      <div class="menu-pop" id="pp-more" hidden>
+        <button id="btn-pp-train">重新訓練模型（10–20 分）</button>
+        <button id="btn-pp-export">匯出資料（Parquet）</button>
+        <button data-settings="paper">紙上交易設定</button>
+        <div class="menu-note">每次 5 分鐘同步完成後自動跑一輪。訊號只用已收盤的 K 線，模擬成交用下一根 K 線的開盤價；不會對 OKX 下任何單。</div>
+      </div>
     </div>
   </div>
-  <div class="panel">
-    <h2>交易員排行 <button class="gear-sm" data-settings="paper" title="紙上交易設定">⚙</button>
-      <select id="pp-book"><option value="C">C：只記報酬率</option><option value="A">A：10,000U 每筆 2% 1x</option><option value="B">B：仿你的習慣 20x</option></select>
-    </h2>
-    <div id="pp-market" class="pp-market"></div>
-    <div class="row pp-filter" id="pp-filter">
-      <span class="muted">顯示：</span>
-      <label><input type="radio" name="pp-kind" value="" checked> 全部</label>
-      <label><input type="radio" name="pp-kind" value="rule"> 探索規則</label>
-      <label><input type="radio" name="pp-kind" value="sl20"> 止損 20% 版本</label>
-      <label><input type="radio" name="pp-kind" value="follow"> 跟單</label>
-      <label><input type="radio" name="pp-kind" value="heat"> 過熱</label>
-      <label><input type="radio" name="pp-kind" value="model"> 模型／分身</label>
-      <label><input type="radio" name="pp-kind" value="random"> 隨機對照</label>
+  <div id="pp-meta" class="pp-status muted"></div>
+  <pre id="pp-log" class="log short" style="display:none"></pre>
+
+  <div id="pp-summary" class="pp-summary"></div>
+  <div id="pp-market" class="pp-market"></div>
+
+  <div class="pp-tabs" role="tablist" aria-label="AI 模擬分頁">
+    <button data-pptab="board" class="on">排行</button>
+    <button data-pptab="equity">權益曲線</button>
+    <button data-pptab="pos">持倉／平倉</button>
+    <button data-pptab="cmp" class="replay-only" hidden>探索 vs 盲測</button>
+    <button data-pptab="models">模型與 LLM</button>
+    <span id="pp-filter-chip" class="pp-chip" hidden></span>
+  </div>
+
+  <div class="pp-pane" data-pane="board">
+    <div class="pp-filters">
+      <span class="muted">帳本</span>
+      <span class="tags" id="pp-book-tags">
+        <button data-book="C" class="on" title="只記報酬率，每筆等權">C</button>
+        <button data-book="A" title="10,000U，每筆 2% 本金，1x">A</button>
+        <button data-book="B" title="仿你的習慣 20x，會強平">B</button>
+      </span>
+      <span class="muted sep">類型</span>
+      <span class="tags" id="pp-kind-tags">
+        <button data-kind="" class="on">全部</button>
+        <button data-kind="rule">探索規則</button>
+        <button data-kind="sl20">止損 20%</button>
+        <button data-kind="follow">跟單</button>
+        <button data-kind="heat">過熱</button>
+        <button data-kind="model">模型／分身／LLM</button>
+        <button data-kind="random">隨機對照</button>
+      </span>
     </div>
-    <div class="scroll"><table id="pp-board" class="clickable"></table></div>
-    <div id="pp-follow" class="pp-follow" style="display:none"></div>
-    <details class="hint"><summary>「勝過隨機」是什麼意思？</summary>以每日平均報酬比較同期隨機對照組，t &gt; 2 且至少 20 個交易日才標示顯著。
-      <ul>
-        <li><b>獨立天數</b>：依每天的交易筆數換算的「等效天數」（筆數都擠在少數幾天時會很小）；最大日＝單日占全部交易的比例。少於 10 天或最大日超過 25% 以黃色標示，代表成績可能只是幾次行情。</li>
-        <li><b>扣同日隨機</b>：每筆報酬減去「同一天、同方向、同出場」隨機對照的平均（樣本不足時用同方向任意出場），再以每日平均做 t 檢定。用來分辨是選股能力，還是只吃到那天的大盤方向。</li>
-        <li><b>同一訊號</b>：進場（同幣、同一小時）有 80% 以上互相重疊的交易員歸為同一組，等於同一個訊號，只能算一個證據；另外列出重疊最多的交易員。</li>
-      </ul></details>
+    <div class="scroll"><table id="pp-board" class="clickable pp-board"></table></div>
   </div>
-  <div class="panel">
-    <h2>權益曲線 <small class="muted">（帳本 A/B；含未平倉浮動）</small></h2>
-    <div id="pp-equity" class="chart" style="height:300px"></div>
+
+  <div class="pp-pane" data-pane="equity" hidden>
+    <div class="muted pp-sub">帳本 <span id="pp-eq-book">A</span>，含未平倉浮動；灰線為隨機對照。點排行的交易員可只看它。</div>
+    <div id="pp-equity" class="chart" style="height:340px"></div>
   </div>
-  <div class="grid2">
-    <div class="panel"><h2>目前模擬持倉 <small id="pp-open-n" class="muted"></small></h2><div class="scroll"><table id="pp-open" class="clickable"></table></div></div>
-    <div class="panel"><h2>最近平倉 <small id="pp-closed-n" class="muted"></small></h2><div class="scroll"><table id="pp-closed" class="clickable"></table></div></div>
+
+  <div class="pp-pane" data-pane="pos" hidden>
+    <div class="pp-filters">
+      <span class="seg small" id="pp-pos-seg">
+        <button data-pos="open" class="on">持倉 <span id="pp-open-n"></span></button>
+        <button data-pos="closed">平倉 <span id="pp-closed-n"></span></button>
+      </span>
+      <span class="muted">點一列開 K 線</span>
+    </div>
+    <div class="scroll"><table id="pp-pos" class="clickable"></table></div>
   </div>
-  <div class="grid2">
-    <div class="panel"><h2>模型</h2><div id="pp-models"></div></div>
-    <div class="panel"><h2>LLM 審核紀錄</h2><div id="pp-llm-meta" class="muted"></div><div class="scroll"><table id="pp-llm"></table></div></div>
+
+  <div class="pp-pane" data-pane="cmp" hidden>
+    <div id="pp-src-meta" class="muted pp-sub"></div>
+    <details class="pp-note"><summary>盲測說明</summary><div id="pp-replay-note" class="muted"></div></details>
+    <div class="muted pp-sub">規則在探索時（2025-10 之後）與盲測（2024-10～2025-09）的成績並排；盲測也勝過隨機才比較可信。</div>
+    <div class="scroll"><table id="pp-replay-cmp"></table></div>
+  </div>
+
+  <div class="pp-pane" data-pane="models" hidden>
+    <details class="pp-fold"><summary>模型</summary><div id="pp-models"></div></details>
+    <details class="pp-fold"><summary>LLM 審核紀錄 <span id="pp-llm-meta" class="muted"></span></summary><div class="scroll"><table id="pp-llm"></table></div></details>
   </div>
 </section>
 

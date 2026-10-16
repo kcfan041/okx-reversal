@@ -1093,14 +1093,88 @@ async function loadScan(refresh) {
 /* ---------------- paper trading ---------------- */
 const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單" };
 const EXIT_WHY = { time: "到期", stop: "止損", liquidation: "強平", stale: "資料中斷", "data gap": "資料缺口" };
-let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {};
+let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {}, ppOpenRow = null, ppLastBoard = null, ppLastStatus = null;
+const PP_KEY = "okxrev.pp";
+const ppState = Object.assign({ src: "live", tab: "board", book: "C", kind: "", pos: "open" }, (() => {
+  try { return JSON.parse(localStorage.getItem(PP_KEY) || "{}"); } catch { return {}; }
+})());
+const ppSave = () => { try { localStorage.setItem(PP_KEY, JSON.stringify(ppState)); } catch { /* private mode */ } };
+(() => {
+  const h = (location.hash || "").slice(1).split("/");
+  if (h[0] !== "pp") return;
+  const [, src, tab, kind, book] = h;
+  if (src === "live" || src === "replay") ppState.src = src;
+  if (["board", "equity", "pos", "cmp", "models"].includes(tab)) ppState.tab = tab;
+  if (kind !== undefined && ["", "rule", "sl20", "follow", "heat", "model", "random"].includes(kind)) ppState.kind = kind;
+  if (["A", "B", "C"].includes(book)) ppState.book = book;
+})();
+const ppSrc = () => ppState.src;
+const ppBook = () => ppState.book;
 
+function ppSetOn(sel, attr, val) {
+  document.querySelectorAll(`${sel} [data-${attr}]`).forEach((b) => b.classList.toggle("on", b.dataset[attr] === val));
+}
+function ppApplyUi() {
+  ppSetOn(".pp-ctl .seg", "src", ppState.src);
+  ppSetOn("#pp-book-tags", "book", ppState.book);
+  ppSetOn("#pp-kind-tags", "kind", ppState.kind);
+  ppSetOn("#pp-pos-seg", "pos", ppState.pos);
+  const replay = ppState.src === "replay";
+  document.querySelectorAll(".pp-tabs .replay-only").forEach((b) => (b.hidden = !replay));
+  if (!replay && ppState.tab === "cmp") ppState.tab = "board";
+  ppSetOn(".pp-tabs", "pptab", ppState.tab);
+  document.querySelectorAll("#tab-pp .pp-pane").forEach((p) => (p.hidden = p.dataset.pane !== ppState.tab));
+  $("#btn-pp-tick").hidden = replay;
+  $("#pp-eq-book").textContent = ppState.book === "B" ? "B" : "A";
+  const chip = $("#pp-filter-chip");
+  chip.hidden = !ppFilter;
+  chip.innerHTML = ppFilter ? `篩選：<b>${esc(ppFilter)}</b> <button aria-label="取消篩選" title="取消篩選">✕</button>` : "";
+}
+function ppSetFilter(tid) {
+  ppFilter = tid;
+  ppApplyUi();
+  if (ppState.tab === "pos") loadPaperPositions();
+  if (ppState.tab === "equity") loadPaperEquity();
+}
+function ppShowTab(t) {
+  ppState.tab = t; ppSave(); ppApplyUi();
+  if (t === "equity") loadPaperEquity();
+  if (t === "pos") loadPaperPositions();
+  if (t === "models" && ppSrc() === "live") loadLLM();
+}
+
+document.querySelectorAll(".pp-ctl .seg [data-src]").forEach((b) => b.addEventListener("click", () => {
+  if (ppState.src === b.dataset.src) return;
+  ppState.src = b.dataset.src; ppFilter = null; ppOpenRow = null; ppSave(); ppApplyUi(); loadPaper();
+}));
+document.querySelectorAll(".pp-tabs [data-pptab]").forEach((b) => b.addEventListener("click", () => ppShowTab(b.dataset.pptab)));
+$("#pp-filter-chip").addEventListener("click", (e) => { if (e.target.closest("button")) { ppOpenRow = null; ppSetFilter(null); if (ppLastBoard) renderBoard(...ppLastBoard); } });
+document.querySelectorAll("#pp-book-tags [data-book]").forEach((b) => b.addEventListener("click", () => {
+  ppState.book = b.dataset.book; ppSave(); ppApplyUi();
+  if (ppLastBoard) renderBoard(...ppLastBoard);
+  if (ppState.tab === "equity") loadPaperEquity();
+  if (ppState.tab === "pos") loadPaperPositions();
+}));
+document.querySelectorAll("#pp-kind-tags [data-kind]").forEach((b) => b.addEventListener("click", () => {
+  ppState.kind = b.dataset.kind; ppSave(); ppApplyUi();
+  if (ppLastBoard) renderBoard(...ppLastBoard);
+}));
+document.querySelectorAll("#pp-pos-seg [data-pos]").forEach((b) => b.addEventListener("click", () => {
+  ppState.pos = b.dataset.pos; ppSave(); ppApplyUi(); loadPaperPositions();
+}));
+$("#btn-pp-more").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const pop = $("#pp-more");
+  pop.hidden = !pop.hidden;
+  $("#btn-pp-more").setAttribute("aria-expanded", String(!pop.hidden));
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".menu")) { $("#pp-more").hidden = true; $("#btn-pp-more").setAttribute("aria-expanded", "false"); }
+});
 $("#btn-pp-tick").addEventListener("click", async () => { await confirmable("/api/paper/tick"); pollPaperJobs(); });
-$("#btn-pp-train").addEventListener("click", async () => { try { const r = await post("/api/paper/train"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); } pollPaperJobs(); });
-$("#btn-pp-export").addEventListener("click", async () => { try { const r = await post("/api/paper/export"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); } });
-$("#pp-book").addEventListener("change", () => loadPaper());
-document.querySelectorAll('input[name="pp-src"]').forEach((r) => r.addEventListener("change", () => { ppFilter = null; loadPaper(); }));
-const ppSrc = () => document.querySelector('input[name="pp-src"]:checked').value;
+$("#btn-pp-train").addEventListener("click", async () => { $("#pp-more").hidden = true; try { const r = await post("/api/paper/train"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); } pollPaperJobs(); });
+$("#btn-pp-export").addEventListener("click", async () => { $("#pp-more").hidden = true; try { const r = await post("/api/paper/export"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); } });
+ppApplyUi();
 
 function groupNames(lb) {
   const g = {};
@@ -1113,20 +1187,17 @@ function groupNames(lb) {
   });
   return g;
 }
-function diagCols(groups) {
-  return [
-    { t: "獨立天數", f: (r) => { const d = r.diag; if (!d) return "-"; const bad = d.eff_days < 10 || d.max_day_share > 0.25;
-      return `<span class="${bad ? "warn" : ""}" title="交易日 ${d.n_days} 天；最大單日占 ${pct(d.max_day_share, 0)} 的交易；最好 3 天貢獻 ${d.top3_days_ret_share == null ? "-" : pct(d.top3_days_ret_share, 0)} 的報酬">${num(d.eff_days, 1)}</span> <span class="muted">最大日 ${pct(d.max_day_share, 0)}</span>`; } },
-    { t: "扣同日隨機", f: (r) => { const v = r.diag && r.diag.vs_same_day; if (!v) return "-";
-      return `${pctC(v.excess, 2)} <span class="muted">t=${num(v.t, 1)}</span>${v.significant ? ' <span class="badge ok">顯著</span>' : ""}`; } },
-    { t: "同一訊號", cls: "l", f: (r) => { const d = r.diag; if (!d) return "-";
-      const g = d.group ? `<span class="badge warn" title="${esc(d.group.join("、"))}">組 ${groups[d.group.join(",")]}（${d.group.length}）</span> ` : "";
-      const o = d.overlap ? `<span class="muted">與 ${esc(d.overlap.with)} 重疊 ${pct(d.overlap.share, 0)}</span>` : "";
-      return g + o || "-"; } },
-  ];
-}
-
+const TIP = {
+  same: "每筆報酬減去「同一天、同方向、同出場」隨機對照的平均，再以每日平均做 t 檢定；t > 2 且至少 20 個交易日才算顯著。用來分辨選股能力，還是只吃到那天的大盤方向。",
+  eff: "依每天的交易筆數換算的等效天數（筆數擠在少數幾天時會很小）。少於 10 天或單日占比超過 25% 標黃色，代表成績可能只是幾次行情。",
+  grp: "進場（同幣、同一小時）有 80% 以上互相重疊的交易員歸為同一組，等於同一個訊號，只能算一個證據。",
+  booka: "1 萬 U、每筆 2% 本金、依時間順序複利；不是報酬加總。",
+  mean: "每筆淨報酬的平均（已扣手續費、滑價、資金費）。",
+};
+const th = (t, tip) => ({ t, tip });
+const lowSample = (r) => (r.b.n || 0) < 20 || (r.diag && r.diag.eff_days < 10);
 const sameDay = (r) => { const v = r.diag && r.diag.vs_same_day; return v ? v.excess : null; };
+
 function renderMarket(m) {
   const el = $("#pp-market");
   if (!m || !m.from) { el.innerHTML = ""; return; }
@@ -1135,139 +1206,200 @@ function renderMarket(m) {
   const parts = [`期間 ${utc(m.from).slice(0, 10)} ～ ${utc(m.to).slice(0, 10)}（${num(m.days, 1)} 天）`];
   if (m.market_cum != null) {
     const dn = (m.market_days || []).filter((d) => d.down > 0.7).length;
-    parts.push(`全市場每日漲跌中位數累計 ${pctC(m.market_cum, 1)}${dn ? `，其中 ${dn} 天有七成以上的幣下跌` : ""}`);
+    parts.push(`全市場累計 ${pctC(m.market_cum, 1)}${dn ? `，${dn} 天有七成以上的幣下跌` : ""}`);
   }
-  if (pick) parts.push(`隨機進場每筆（${pick}）：做空 ${pctC(rnd("short", pick).mean, 2)}、做多 ${pctC(rnd("long", pick).mean, 2)}`);
+  if (pick) parts.push(`隨機進場（${pick}）：做空 ${pctC(rnd("short", pick).mean, 2)}、做多 ${pctC(rnd("long", pick).mean, 2)}`);
   const s = rnd("short", pick || "24h"), l = rnd("long", pick || "24h");
-  const tilt = s && l && Math.abs(s.mean - l.mean) > 0.01 ? `<span class="warn">大盤方向明顯（${s.mean > l.mean ? "偏跌，任何做空都會好看" : "偏漲，任何做多都會好看"}），請以「扣同日隨機」判斷</span>` : "";
-  el.innerHTML = parts.join("；") + (tilt ? `<br>${tilt}` : "");
+  const tilt = s && l && Math.abs(s.mean - l.mean) > 0.01 ? ` <span class="badge warn">大盤${s.mean > l.mean ? "偏跌，做空都會好看" : "偏漲，做多都會好看"}，請看「扣同日隨機」</span>` : "";
+  el.innerHTML = parts.join("　·　") + tilt;
 }
 
-let ppLastBoard = null;
-const ppKindOk = (r, k) => !k || (k === "sl20" ? r.trader_id.endsWith("_sl20")
-  : k === "rule" ? r.kind === "rule" && !r.trader_id.endsWith("_sl20")
-  : k === "model" ? ["ml", "llm"].includes(r.kind) || r.trader_id.startsWith("twin")
-  : k === "random" ? r.trader_id.startsWith("random") : r.kind === k);
-document.querySelectorAll('input[name="pp-kind"]').forEach((x) => x.addEventListener("change", () => ppLastBoard && renderBoard(...ppLastBoard)));
+function renderSummary(lb, status) {
+  const el = $("#pp-summary");
+  const real = (lb || []).filter((r) => !r.trader_id.startsWith("random"));
+  const eff = real.filter((r) => r.profitable);
+  const sig = real.filter((r) => r.diag && r.diag.vs_same_day && r.diag.vs_same_day.significant);
+  const best = (eff.length ? eff : []).slice().sort((a, b) => (sameDay(b) ?? -9) - (sameDay(a) ?? -9))[0];
+  const bestBook = real.filter((r) => r.book_a_ret != null).sort((a, b) => b.book_a_ret - a.book_a_ret)[0];
+  const item = (k, v) => `<span class="kv1"><span class="k">${k}</span><span class="v">${v}</span></span>`;
+  const items = [
+    item("有效交易員", best ? `<b>${esc(best.trader_id)}</b>（每筆 ${pctC(best.C.mean, 2)}）${eff.length > 1 ? `，共 ${eff.length} 個` : ""}` : '<span class="muted">目前沒有</span>'),
+    item("扣同日隨機顯著", `${sig.length} 個`),
+    item("帳本 A 最高", bestBook ? `${esc(bestBook.trader_id)} ${pctC(bestBook.book_a_ret, 1)}` : "-"),
+  ];
+  if (status) {
+    const lt = status.last_tick || {};
+    const bk = ppBook(), sum = (k) => real.reduce((a, r) => a + ((r[bk] || {})[k] || 0), 0);
+    items.push(item(`持倉（帳本 ${bk}）`, fmtN(sum("open"))), item("已平倉", fmtN(sum("n"))), item("上一輪", `${ago(lt.tick_ts)}`));
+  }
+  el.innerHTML = items.join("");
+}
 
-async function showFollow(tid) {
-  const el = $("#pp-follow");
-  if (!tid || !tid.startsWith("follow_")) { el.style.display = "none"; return; }
+async function showFollowInto(el, tid) {
   const d = await api(`/api/paper/follow?trader=${encodeURIComponent(tid)}&src=${ppSrc()}`).catch((e) => ({ error: e.message }));
-  el.style.display = "";
   if (d.error) { el.innerHTML = `<span class="neg">${esc(d.error)}</span>`; return; }
   const fs = d.set || {};
   const cur = d.picks[0];
-  const hist = d.picks.slice(0, 15).map((p) => `<tr><td>${utc(p.period_ts)}</td><td class="l">${p.picks.length ? p.picks.map((x) => `${esc(x.trader_id)} <span class="muted">${pct(x.score, 2)}（${x.n}）</span>`).join("、") : '<span class="muted">累積中（資料不足，不下單）</span>'}</td></tr>`).join("");
+  const hist = d.picks.slice(0, 12).map((p) => `<tr><td>${utc(p.period_ts)}</td><td class="l">${p.picks.length ? p.picks.map((x) => `${esc(x.trader_id)} <span class="muted">${pct(x.score, 2)}（${x.n}）</span>`).join("、") : '<span class="muted">累積中（資料不足，不下單）</span>'}</td></tr>`).join("");
   const src = (d.by_source || []).map((x) => `${esc(x.trader_id)} ${x.n} 筆 ${pctC(x.mean, 2)}`).join("、");
-  el.innerHTML = `<h3>${esc(tid)} ${fs.short ? '<span class="badge warn">短期對照</span>' : ""}</h3>
-    <div class="muted">每 ${fs.step_h >= 24 ? fs.step_h / 24 + " 天" : fs.step_h + " 小時"}重選；回看 ${fs.look_h / 24} 天；跟前 ${fs.top} 名（至少 ${fs.min_n} 筆，排名用扣同期隨機的每筆平均）；止損 20%
-      ${d.next_repick && ppSrc() === "live" ? `；下次重選 ${utc(d.next_repick)} UTC` : ""}</div>
-    <div>目前跟：${cur ? (cur.picks.length ? cur.picks.map((x) => `<b>${esc(x.trader_id)}</b>`).join("、") : '<span class="muted">累積中</span>') : '<span class="muted">尚未重選</span>'}</div>
-    ${src ? `<div class="muted">已平倉來源：${src}</div>` : ""}
-    <div class="scroll" style="max-height:220px"><table><thead><tr><th>重選時間</th><th class="l">選中（分數、筆數）</th></tr></thead><tbody>${hist || '<tr><td colspan="2" class="muted">尚無紀錄</td></tr>'}</tbody></table></div>`;
+  el.innerHTML = `<div class="muted">每 ${fs.step_h >= 24 ? fs.step_h / 24 + " 天" : fs.step_h + " 小時"}重選；回看 ${fs.look_h / 24} 天；跟前 ${fs.top} 名（至少 ${fs.min_n} 筆）；止損 20%${d.next_repick && ppSrc() === "live" ? `；下次重選 ${utc(d.next_repick)} UTC` : ""}</div>
+    <div>目前跟：${cur ? (cur.picks.length ? cur.picks.map((x) => `<b>${esc(x.trader_id)}</b>`).join("、") : '<span class="muted">累積中</span>') : '<span class="muted">尚未重選</span>'}${src ? `　<span class="muted">已平倉來源：${src}</span>` : ""}</div>
+    <table class="mini"><thead><tr><th>重選時間</th><th class="l">選中（分數、筆數）</th></tr></thead><tbody>${hist || '<tr><td colspan="2" class="muted">尚無紀錄</td></tr>'}</tbody></table>`;
+}
+
+function detailHtml(r, groups) {
+  const b = r.b, d = r.diag || {}, v = d.vs_same_day || {}, vr = r.vs_random || {};
+  const kv = (k, val) => `<div><span class="k">${k}</span>${val}</div>`;
+  const grp = d.group ? `組 ${groups[d.group.join(",")]}：${esc(d.group.join("、"))}` : "-";
+  return `<div class="pp-detail-grid">
+      ${kv("類型", esc(KIND[r.kind] || r.kind))}
+      ${kv("持倉中", fmtN(b.open || 0))}
+      ${kv("交易天數", fmtN(b.n_days || 0))}
+      ${kv("勝率", pct(b.win_rate, 0))}
+      ${kv("日均", pctC(b.day_mean, 2))}
+      ${kv("強平", b.liquidations ? `<span class="neg">${b.liquidations}</span>` : "0")}
+      ${ppBook() !== "C" ? kv("權益", `${num(b.equity)} (${usd((b.equity || 0) - (b.start || 0))})`) : ""}
+      ${kv("勝過隨機（全期）", vr.diff != null ? `${pctC(vr.diff, 2)} t=${num(vr.t, 1)}` : "-")}
+      ${kv("扣同日隨機", v.excess != null ? `${pctC(v.excess, 2)}，t=${num(v.t, 1)}，${v.n_days} 天` : "-")}
+      ${kv("最大單日占比", d.max_day_share != null ? pct(d.max_day_share, 0) : "-")}
+      ${kv("最好 3 天貢獻", d.top3_days_ret_share != null ? pct(d.top3_days_ret_share, 0) : "-")}
+      ${kv("重疊最多", d.overlap ? `${esc(d.overlap.with)} ${pct(d.overlap.share, 0)}` : "-")}
+      ${kv("同一訊號", grp)}
+    </div>
+    <div class="muted">${esc(r.label)}</div>
+    ${r.kind === "follow" ? '<div class="pp-follow-box">載入跟單資料…</div>' : ""}
+    <div class="pp-detail-act"><button class="small" data-act="pos">看持倉／平倉</button> <button class="small" data-act="eq">看權益曲線</button></div>`;
 }
 
 function renderBoard(lb, market) {
   ppLastBoard = [lb, market];
-  const book = $("#pp-book").value;
+  const book = ppBook();
   if (market !== undefined) renderMarket(market);
-  const kind = (document.querySelector('input[name="pp-kind"]:checked') || {}).value || "";
-  const rows = lb.filter((r) => ppKindOk(r, kind)).map((r) => ({ ...r, b: r[book] || {} }));
-  const key = (r) => (r.trader_id.startsWith("random") ? -1e6 : sameDay(r) ?? (r.b.n ? -1e3 + (r.b.mean ?? 0) : -1e9));
+  const kind = ppState.kind;
+  const ppKindOk = (r) => !kind || (kind === "sl20" ? r.trader_id.endsWith("_sl20")
+    : kind === "rule" ? r.kind === "rule" && !r.trader_id.endsWith("_sl20")
+    : kind === "model" ? ["ml", "llm"].includes(r.kind) || r.trader_id.startsWith("twin")
+    : kind === "random" ? r.trader_id.startsWith("random") : r.kind === kind);
+  const rows = lb.filter(ppKindOk).map((r) => ({ ...r, b: r[book] || {} }));
+  const key = (r) => (r.trader_id.startsWith("random") && kind !== "random" ? -1e6 : sameDay(r) ?? (r.b.n ? -1e3 + (r.b.mean ?? 0) : -1e9));
   rows.sort((a, b) => key(b) - key(a));
-  table($("#pp-board"), [
-    { t: "交易員", cls: "l wrap", f: (r) => `<b>${esc(r.trader_id)}</b>${r.profitable ? ' <span class="badge ok" title="每筆平均為正、帳本 A 獲利、扣同日隨機顯著">有效</span>' : ""}<div class="muted">${esc(r.label)}</div>` },
-    { t: "類型", f: (r) => KIND[r.kind] || r.kind },
-    { t: "平倉", f: (r) => r.b.n || 0 }, { t: "持倉", f: (r) => r.b.open || 0 },
-    { t: "天數", f: (r) => r.b.n_days || 0 },
-    { t: "勝率", f: (r) => pct(r.b.win_rate, 0) },
-    { t: "每筆平均", f: (r) => pctC(r.b.mean, 2) },
-    { t: "日均", f: (r) => pctC(r.b.day_mean, 2) },
-    { t: book === "C" ? "帳本 A 報酬" : "權益", f: (r) => (book === "C"
-      ? `<span title="1 萬 U、每筆 2% 本金、依時間順序複利；不是報酬加總">${pctC(r.book_a_ret, 1)}</span>`
-      : `${num(r.b.equity)} <span class="muted">(${usd((r.b.equity || 0) - (r.b.start || 0))})</span>`) },
-    { t: "強平", f: (r) => (r.b.liquidations ? `<span class="neg">${r.b.liquidations}</span>` : 0) },
-    { t: "勝過隨機", f: (r) => (r.vs_random ? `${pctC(r.vs_random.diff, 2)} t=${num(r.vs_random.t, 1)} ${r.vs_random.significant ? '<span class="badge ok">顯著</span>' : ""}` : "-") },
-    ...diagCols(groupNames(lb)),
-  ], rows, { onClick: (r) => { ppFilter = ppFilter === r.trader_id ? null : r.trader_id; loadPaperPositions(); loadPaperEquity(); showFollow(ppFilter); } });
+  const groups = groupNames(lb);
+  const cols = [
+    { t: "交易員", cls: "l", f: (r) => `<span class="tid">${esc(r.trader_id)}</span>${r.profitable ? ' <span class="badge ok" title="每筆平均為正、帳本 A 獲利、扣同日隨機顯著">有效</span>' : ""}${!r.profitable && r.diag && r.diag.vs_same_day && r.diag.vs_same_day.significant ? ' <span class="badge" title="扣同日隨機顯著，但每筆或帳本 A 不賺">顯著</span>' : ""}${lowSample(r) && !r.trader_id.startsWith("random") ? ' <span class="badge dim">樣本不足</span>' : ""}` },
+    { t: "平倉", f: (r) => fmtN(r.b.n || 0) },
+    { ...th("每筆平均", TIP.mean), f: (r) => pctC(r.b.mean, 2) },
+    book === "C" ? { ...th("帳本 A", TIP.booka), f: (r) => pctC(r.book_a_ret, 1) }
+      : { t: "權益", f: (r) => (r.b.equity == null ? "-" : usd((r.b.equity || 0) - (r.b.start || 0))) },
+    { ...th("扣同日隨機", TIP.same), f: (r) => { const v = r.diag && r.diag.vs_same_day; return v ? `${pctC(v.excess, 2)} <span class="muted">t ${num(v.t, 1)}</span>` : "-"; } },
+    { ...th("獨立天數", TIP.eff), f: (r) => { const d = r.diag; if (!d) return "-"; const bad = d.eff_days < 10 || d.max_day_share > 0.25; return `<span class="${bad ? "warn" : ""}">${num(d.eff_days, 1)}</span>`; } },
+    { ...th("同一訊號", TIP.grp), cls: "l", f: (r) => (r.diag && r.diag.group ? `<span class="badge warn" title="${esc(r.diag.group.join("、"))}">組 ${groups[r.diag.group.join(",")]}</span>` : "") },
+  ];
+  const el = $("#pp-board");
+  const head = `<thead><tr>${cols.map((c) => `<th class="${c.cls || ""}">${esc(c.t)}${c.tip ? ` <span class="tip" title="${esc(c.tip)}" tabindex="0">ⓘ</span>` : ""}</th>`).join("")}</tr></thead>`;
+  const body = rows.map((r, i) => {
+    const rnd = r.trader_id.startsWith("random") && kind !== "random";
+    const open = ppOpenRow === r.trader_id;
+    return `<tr data-ri="${i}" class="${rnd ? "dim" : ""}${open ? " sel" : ""}">${cols.map((c) => `<td class="${c.cls || ""}">${c.f(r)}</td>`).join("")}</tr>` +
+      (open ? `<tr class="pp-detail"><td colspan="${cols.length}">${detailHtml(r, groups)}</td></tr>` : "");
+  }).join("");
+  el.innerHTML = head + `<tbody>${body || `<tr><td colspan="${cols.length}" class="muted l">（無資料）</td></tr>`}</tbody>`;
+  el.querySelectorAll("tbody tr[data-ri]").forEach((tr) => tr.addEventListener("click", () => {
+    const r = rows[+tr.dataset.ri];
+    const same = ppOpenRow === r.trader_id;
+    ppOpenRow = same ? null : r.trader_id;
+    ppSetFilter(same ? null : r.trader_id);
+    renderBoard(...ppLastBoard);
+  }));
+  const det = el.querySelector("tr.pp-detail");
+  if (det) {
+    const r = rows.find((x) => x.trader_id === ppOpenRow);
+    det.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); ppShowTab(b.dataset.act === "pos" ? "pos" : "equity"); }));
+    const fb = det.querySelector(".pp-follow-box");
+    if (fb && r) showFollowInto(fb, r.trader_id);
+  }
+  renderSummary(lb, ppSrc() === "live" ? ppLastStatus : null);
 }
 
 async function loadReplay() {
   const r = await api("/api/replay/summary").catch((e) => ({ error: e.message }));
   if (r.error || !r.exists) {
-    $("#pp-src-meta").textContent = r.error || "尚未執行盲測（python -m okxrev.replay --run）";
+    $("#pp-meta").textContent = r.error || "尚未執行盲測（python -m okxrev.replay --run）";
     $("#pp-replay-note").textContent = "";
+    $("#pp-summary").innerHTML = "";
     table($("#pp-board"), [], []);
     table($("#pp-replay-cmp"), [], []);
     return;
   }
   const m = r.meta;
-  $("#pp-src-meta").textContent = `${m.start} ～ ${m.end}，${m.n_insts} 個合約，${fmtN(m.signals)} 個決策，產生於 ${m.generated_at}（耗時 ${Math.round(m.elapsed_sec / 60)} 分）`;
+  $("#pp-meta").textContent = `盲測 ${m.start} ～ ${m.end}，${m.n_insts} 個合約，${fmtN(m.signals)} 個決策；產生於 ${m.generated_at}（耗時 ${Math.round(m.elapsed_sec / 60)} 分）`;
+  $("#pp-src-meta").textContent = $("#pp-meta").textContent;
   $("#pp-replay-note").innerHTML = `<ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
   const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab", "follow"].includes(x.kind));
   rules.sort((a, b) => (sameDay(b) ?? -9) - (sameDay(a) ?? -9));
   table($("#pp-replay-cmp"), [
-    { t: "交易員", cls: "l wrap", f: (x) => `<b>${esc(x.trader_id)}</b>${x.profitable ? ' <span class="badge ok">有效</span>' : ""}<div class="muted">${esc(x.label)}</div>` },
+    { t: "交易員", cls: "l", f: (x) => `<span class="tid">${esc(x.trader_id)}</span>${x.profitable ? ' <span class="badge ok">有效</span>' : ""}` },
     { t: "探索判定", f: (x) => (x.discovery ? `<span class="badge ${VERD[x.discovery.verdict] || ""}">${esc(x.discovery.verdict)}</span>` : "-") },
-    { t: "探索・驗證段", f: (x) => (x.discovery ? pctC(x.discovery.valid, 2) : "-") },
-    { t: "探索・保留段", f: (x) => (x.discovery ? pctC(x.discovery.holdout, 2) : "-") },
-    { t: "盲測次數", f: (x) => `${x.C.n || 0} <span class="muted">(${x.C.n_days || 0} 天)</span>` },
+    { t: "探索驗證段", f: (x) => (x.discovery ? pctC(x.discovery.valid, 2) : "-") },
+    { t: "探索保留段", f: (x) => (x.discovery ? pctC(x.discovery.holdout, 2) : "-") },
+    { t: "盲測筆數", f: (x) => `${fmtN(x.C.n || 0)} <span class="muted">${x.C.n_days || 0} 天</span>` },
     { t: "盲測每筆", f: (x) => pctC(x.C.mean, 2) },
     { t: "帳本 A", f: (x) => pctC(x.book_a_ret, 1) },
-    { t: "盲測日均", f: (x) => pctC(x.C.day_mean, 2) },
-    { t: "盲測勝率", f: (x) => pct(x.C.win_rate, 0) },
-    { t: "勝過隨機", f: (x) => (x.vs_random ? `${pctC(x.vs_random.diff, 2)} t=${num(x.vs_random.t, 1)} ${x.vs_random.significant ? '<span class="badge ok">顯著</span>' : ""}` : "-") },
-    ...diagCols(groupNames(r.leaderboard)),
-    { t: "每月", f: (x) => `<div class="runchart" style="height:28px;width:180px">${(x.by_month || []).map((b) => `<div class="${b.mean < 0 ? "err" : ""}" style="height:${Math.min(100, Math.abs(b.mean) * 2000)}%" title="${b.m} ${pct(b.mean, 2)} (${b.n})"></div>`).join("")}</div>` },
+    { t: "扣同日隨機", f: (x) => { const v = x.diag && x.diag.vs_same_day; return v ? `${pctC(v.excess, 2)} <span class="muted">t ${num(v.t, 1)}</span>` : "-"; } },
+    { t: "每月", f: (x) => `<div class="runchart" style="height:24px;width:160px">${(x.by_month || []).map((b) => `<div class="${b.mean < 0 ? "err" : ""}" style="height:${Math.min(100, Math.abs(b.mean) * 2000)}%" title="${b.m} ${pct(b.mean, 2)} (${b.n})"></div>`).join("")}</div>` },
   ], rules);
   renderBoard(r.leaderboard, r.market);
-  loadPaperPositions();
-  loadPaperEquity();
+  if (ppState.tab === "pos") loadPaperPositions();
+  if (ppState.tab === "equity") loadPaperEquity();
 }
 
 async function pollPaperJobs() {
   const j = await api("/api/paper/jobs").catch(() => null);
   if (!j) return;
   const lines = [...(j.train.log || []).map((l) => `[訓練] ${l}`), ...(j.tick.log || []).map((l) => `[模擬] ${l}`)];
-  if (lines.length) { $("#pp-log").style.display = ""; renderLog($("#pp-log"), lines.slice(-300)); }
+  const busy = j.train.running || j.tick.running;
+  const log = $("#pp-log");
+  log.style.display = busy || (lines.length && Object.values(ppJobsRunning).some(Boolean)) ? "" : log.style.display;
+  if (lines.length) renderLog(log, lines.slice(-300));
   $("#btn-pp-train").disabled = j.train.running;
   $("#btn-pp-tick").disabled = j.tick.running;
+  $("#btn-pp-tick").textContent = j.tick.running ? "執行中…" : "立即跑一輪";
   for (const k of ["train", "tick"]) {
-    if (ppJobsRunning[k] && !j[k].running) { toast(`${k === "train" ? "訓練" : "模擬"}結束，代碼 ${j[k].returncode}`, j[k].returncode !== 0); loadPaper(); }
+    if (ppJobsRunning[k] && !j[k].running) {
+      toast(`${k === "train" ? "訓練" : "模擬"}結束，代碼 ${j[k].returncode}`, j[k].returncode !== 0);
+      setTimeout(() => { if (!j.train.running && !j.tick.running) log.style.display = "none"; }, 8000);
+      loadPaper();
+    }
     ppJobsRunning[k] = j[k].running;
   }
 }
 
 async function loadPaper() {
-  const isReplay = ppSrc() === "replay";
-  $("#pp-replay").style.display = isReplay ? "" : "none";
-  if (isReplay) { $("#pp-src-meta").textContent = "載入中…"; return loadReplay(); }
-  $("#pp-src-meta").textContent = "";
+  ppApplyUi();
+  if (ppSrc() === "replay") { $("#pp-meta").textContent = "載入中…"; return loadReplay(); }
   const s = await api("/api/paper/status").catch((e) => ({ error: e.message }));
   if (s.error || !s.exists) {
     $("#pp-meta").textContent = s.error || "尚未開始紙上交易（按「立即跑一輪」或等下次同步）";
+    $("#pp-summary").innerHTML = "";
     renderModels(s.models || {});
     return;
   }
+  ppLastStatus = s;
   const lt = s.last_tick || {};
-  $("#pp-meta").innerHTML = `已跑 ${fmtN(s.n_ticks)} 輪（自 ${utc(s.first_tick).slice(0, 16)}），最新 K 線 ${utc(lt.last_bar)}，上一輪 ${ago(lt.tick_ts)} 耗時 ${num(lt.duration, 1)} 秒；
-    決策 ${fmtN(s.n_decisions)}、持倉中 ${s.n_open}、已平倉 ${fmtN(s.n_closed)}；
-    LLM ${s.llm_enabled ? `啟用（${esc(s.llm_model)}，24h ${s.llm_24h.calls} 次 $${num(s.llm_24h.cost, 3)}）` : '<span class="muted">未設定</span>'}`;
+  $("#pp-meta").innerHTML = `已跑 ${fmtN(s.n_ticks)} 輪（自 ${utc(s.first_tick).slice(0, 10)}）· 最新 K 線 ${utc(lt.last_bar)} · 上一輪 ${ago(lt.tick_ts)}，${num(lt.duration, 1)} 秒 · 決策 ${fmtN(s.n_decisions)} · LLM ${s.llm_enabled ? `${esc(s.llm_model)}，24h ${s.llm_24h.calls} 次` : "未設定"}`;
   renderBoard(s.leaderboard, s.market);
   renderModels(s.models || {});
-  loadPaperPositions();
-  loadPaperEquity();
-  loadLLM();
+  if (ppState.tab === "pos") loadPaperPositions();
+  if (ppState.tab === "equity") loadPaperEquity();
+  if (ppState.tab === "models") loadLLM();
 }
 
 async function loadPaperPositions() {
-  const book = $("#pp-book").value;
+  const book = ppBook();
   const q = (state) => `/api/paper/positions?src=${ppSrc()}&state=${state}&book=${book}${ppFilter ? `&trader=${encodeURIComponent(ppFilter)}` : ""}&limit=300`;
   const [o, c] = await Promise.all([api(q("open")).catch(() => []), api(q("closed")).catch(() => [])]);
-  const flt = ppFilter ? `（${ppFilter}，再點一次取消篩選）` : "";
-  $("#pp-open-n").textContent = `${o.length} 筆${flt}`;
-  $("#pp-closed-n").textContent = `${c.length} 筆${flt}`;
+  const cnt = (x) => `(${x.length >= 300 ? "300+" : x.length})`;
+  $("#pp-open-n").textContent = cnt(o);
+  $("#pp-closed-n").textContent = cnt(c);
   const P = (v) => (v == null ? "-" : Number(v).toPrecision(5));
   const click = (x) => {
     const t0 = x.entry_ts || x.signal_ts;
@@ -1278,32 +1410,33 @@ async function loadPaperPositions() {
     const lines = x.stop_px ? [{ inst: x.inst_id, price: x.stop_px, color: "#ef5350", title: "止損" }] : [];
     openKline(x.inst_id, t0 - 6 * 3600e3, t1 + 3 * 3600e3, marks, lines);
   };
-  table($("#pp-open"), [
-    { t: "交易員", k: "trader_id", cls: "l" }, { t: "合約", k: "inst_id", cls: "l" },
-    { t: "方向", f: (x) => `<span class="${x.side === "short" ? "neg" : "pos"}">${SIDE[x.side]}</span>` },
-    { t: "進場", f: (x) => (x.state === "pending" ? '<span class="muted">等待成交</span>' : `${utc(x.entry_ts)}<br>${P(x.entry_px)}`) },
+  const side = (x) => `<span class="${x.side === "short" ? "neg" : "pos"}">${SIDE[x.side]}</span>`;
+  const open = ppState.pos === "open";
+  table($("#pp-pos"), open ? [
+    { t: "交易員", k: "trader_id", cls: "l" }, { t: "合約", k: "inst_id", cls: "l" }, { t: "方向", f: side },
+    { t: "進場", f: (x) => (x.state === "pending" ? '<span class="muted">等待成交</span>' : `${utc(x.entry_ts)} <span class="muted">${P(x.entry_px)}</span>`) },
     { t: "止損", f: (x) => P(x.stop_px) }, { t: "到期", f: (x) => (x.deadline_ts ? utc(x.deadline_ts) : "-") },
-    { t: "最大浮虧/浮盈", f: (x) => `${pct(x.mae, 1)} / ${pct(x.mfe, 1)}` },
-  ], o, { onClick: click });
-  table($("#pp-closed"), [
-    { t: "交易員", k: "trader_id", cls: "l" }, { t: "合約", k: "inst_id", cls: "l" },
-    { t: "方向", f: (x) => `<span class="${x.side === "short" ? "neg" : "pos"}">${SIDE[x.side]}</span>` },
-    { t: "進場", f: (x) => utc(x.entry_ts) }, { t: "出場", f: (x) => `${utc(x.exit_ts)} ${EXIT_WHY[x.exit_reason] || x.exit_reason}` },
+    { t: "最大浮虧", f: (x) => pctC(x.mae == null ? null : -x.mae, 1) }, { t: "最大浮盈", f: (x) => pctC(x.mfe, 1) },
+  ] : [
+    { t: "交易員", k: "trader_id", cls: "l" }, { t: "合約", k: "inst_id", cls: "l" }, { t: "方向", f: side },
+    { t: "進場", f: (x) => utc(x.entry_ts) }, { t: "出場", f: (x) => utc(x.exit_ts) },
+    { t: "原因", f: (x) => `<span class="${x.exit_reason === "stop" || x.exit_reason === "liquidation" ? "neg" : "muted"}">${EXIT_WHY[x.exit_reason] || esc(x.exit_reason)}</span>` },
     { t: "報酬", f: (x) => pctC(x.ret_net, 2) }, { t: "資金費", f: (x) => pct(x.funding, 3) },
-    { t: book === "C" ? "" : "損益", f: (x) => (book === "C" ? "" : usd(x.pnl)) },
-  ], c, { onClick: click });
+    ...(book === "C" ? [] : [{ t: "損益", f: (x) => usd(x.pnl) }]),
+  ], open ? o : c, { onClick: click });
 }
 
 async function loadPaperEquity() {
-  const book = $("#pp-book").value === "B" ? "B" : "A";
+  const book = ppBook() === "B" ? "B" : "A";
   const d = await api(`/api/paper/equity?book=${book}&src=${ppSrc()}`).catch(() => ({}));
+  if (ppState.tab !== "equity") return;
   if (!ppChart) {
     ppChart = LightweightCharts.createChart($("#pp-equity"), {
-      layout: { background: { color: "#171d24" }, textColor: "#d6dde4" }, grid: { vertLines: { color: "#222b35" }, horzLines: { color: "#222b35" } },
+      layout: { background: { color: "#0f1419" }, textColor: "#d6dde4" }, grid: { vertLines: { color: "#1c242d" }, horzLines: { color: "#1c242d" } },
       timeScale: { timeVisible: true, borderColor: "#2a323c" }, rightPriceScale: { borderColor: "#2a323c" },
     });
   }
-  ppChart.resize($("#pp-equity").clientWidth, 300);
+  ppChart.resize($("#pp-equity").clientWidth, 340);
   Object.values(ppSeries).forEach((s) => ppChart.removeSeries(s));
   ppSeries = {};
   const colors = ["#4aa3ff", "#26a69a", "#ffcc00", "#ef5350", "#ab47bc", "#ff7043", "#8d6e63", "#26c6da", "#d4e157", "#ec407a"];
@@ -1322,7 +1455,7 @@ async function loadPaperEquity() {
 
 function renderModels(m) {
   const keys = Object.keys(m);
-  if (!keys.length) { $("#pp-models").innerHTML = '<p class="muted">尚未訓練（按「重新訓練模型」，約 10-20 分鐘）</p>'; return; }
+  if (!keys.length) { $("#pp-models").innerHTML = '<p class="muted">尚未訓練（「更多 ▾」→ 重新訓練模型，約 10-20 分鐘）</p>'; return; }
   $("#pp-models").innerHTML = keys.map((k) => {
     const x = m[k];
     const wf = x.walk_forward;
@@ -1340,10 +1473,11 @@ function renderModels(m) {
 
 async function loadLLM() {
   const d = await api("/api/paper/decisions?kind=llm&limit=100").catch(() => []);
-  $("#pp-llm-meta").textContent = d.length ? "" : "尚無 LLM 審核紀錄（在 .env 設定 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 後啟用）";
+  $("#pp-llm-meta").textContent = d.length ? `（最近 ${d.length} 筆）` : "（尚無紀錄；在 .env 設定 LLM 後啟用）";
   const A = { enter: '<span class="badge ok">接受</span>', reject: '<span class="badge bad">拒絕</span>', skip_llm: '<span class="badge">未審核</span>' };
   table($("#pp-llm"), [
     { t: "時間", f: (x) => utc(x.bar_ts) }, { t: "合約", k: "inst_id", cls: "l" },
+    { t: "方式", f: (x) => (x.trader_id.startsWith("llmb_") ? '<span class="badge">批次</span>' : '<span class="muted">單筆</span>') },
     { t: "方向", f: (x) => SIDE[x.side] }, { t: "結果", f: (x) => A[x.action] || esc(x.action) },
     { t: "理由", cls: "l wrap", f: (x) => esc((x.reason || "").split("｜").slice(-1)[0]) },
   ], d);
@@ -2285,11 +2419,11 @@ function labSteps() {
 }
 
 window.addEventListener("hashchange", () => {
-  const t = location.hash.slice(1);
+  const t = location.hash.slice(1).split("/")[0];
   if (t && t !== currentTab) showTab(t);
 });
 setInterval(() => { if (!document.hidden) pollGlobalJobs(); }, 5000);
 setInterval(() => { if (!document.hidden && currentTab === "lab") labSteps(); }, 2000);
 pollGlobalJobs();
 
-showTab((location.hash || "#dash").slice(1) || "dash");
+showTab((location.hash || "#dash").slice(1).split("/")[0] || "dash");
