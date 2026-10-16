@@ -145,11 +145,35 @@ def test_derivs_sync_pages(tmp_path):
     con = duckdb.connect(str(tmp_path / "d.duckdb"))
     s = derivs.DerivSync(CFG, C(), con)
     r = s.run(["AAA-USDT-SWAP"])
-    assert r["done"] == 4
+    assert r["done"] == 6
     assert con.execute("SELECT COUNT(*) FROM funding").fetchone()[0] == 2
     assert con.execute("SELECT backfill_done FROM derivs_state WHERE stream='funding'").fetchone()[0]
+    assert all(con.execute("SELECT backfill_done FROM derivs_state WHERE stream LIKE 'oi:1%'").fetchall())
     r2 = s.run(["AAA-USDT-SWAP"])
     assert r2["jobs"] == 0
+
+
+def test_oi_history_runs_after_all_newest_pages(tmp_path):
+    import duckdb
+    from okxrev.db import now_ms
+    order = []
+
+    class C:
+        def get(self, path, p):
+            order.append((p.get("instId"), p.get("period"), "end" in p))
+            return [[str(now_ms() - 10 * 3_600_000), "1", "1", "1"]] if "end" in p else [[str(now_ms()), "1", "1", "1"]]
+
+    con = duckdb.connect(str(tmp_path / "d.duckdb"))
+    s = derivs.DerivSync(CFG, C(), con)
+    now = now_ms()
+    for i in ("A", "B"):
+        s.states[(i, "funding")] = (now, None, True, now)
+        s.states[(i, "oi:1D")] = (now, None, True, now)
+        s.states[(i, "oi:1H")] = (now, now - 100 * 3_600_000, False, now - 2 * 3_600_000)
+    s.run(["A", "B"], oi5m_insts=set())
+    first_back = next(k for k, x in enumerate(order) if x[2])
+    assert {x[0] for x in order[:first_back]} == {"A", "B"} and not any(x[2] for x in order[:first_back])
+    assert s.states[("A", "oi:1H")][3] > now - 60_000
 
 
 def test_derivs_no_starvation(tmp_path):

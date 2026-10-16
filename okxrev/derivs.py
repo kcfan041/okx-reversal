@@ -173,7 +173,8 @@ class DerivSync:
                 after = min(r[1] for r in page)
         self._save(inst, "funding", keys, done)
 
-    def oi(self, inst: str, period: str, max_pages: int = 3) -> None:
+    def oi(self, inst: str, period: str, max_pages: int = 3, backfill: bool = True) -> None:
+        """Newest page always; then, if history is incomplete and `backfill`, page back up to max_pages."""
         stream = f"oi:{period}"
         newest, oldest, done, _ = self._state(inst, stream)
         rows = fetch_oi(self.client, inst, period)
@@ -182,7 +183,7 @@ class DerivSync:
         keys = [r[2] for r in rows]
         if not keys and oldest is None:
             done = True
-        if not done and period != "5m":
+        if not done and period != "5m" and backfill:
             end = (min(keys) if keys else oldest)
             for _ in range(max_pages):
                 if end is None:
@@ -196,6 +197,28 @@ class DerivSync:
                 keys += [r[2] for r in page]
                 end = min(r[2] for r in page)
         self._save(inst, stream, keys, done if period != "5m" else True)
+
+    def oi_history(self, inst: str, period: str, max_pages: int = 3) -> None:
+        """Page older OI history (lowest priority; runs only after the newest pages of every due job). Keeps
+        last_run unchanged so the forward schedule is not affected."""
+        stream = f"oi:{period}"
+        newest, oldest, done, last = self._state(inst, stream)
+        if done or oldest is None:
+            return
+        end = oldest
+        keys: list[int] = []
+        for _ in range(max_pages):
+            page = fetch_oi(self.client, inst, period, end=end - 1)
+            self.n_req += 1
+            if not page:
+                done = True
+                break
+            self._write("open_interest", page)
+            keys += [r[2] for r in page]
+            end = min(r[2] for r in page)
+        self._save(inst, stream, keys, done)
+        n, o, d, _ = self.states[(inst, stream)]
+        self.states[(inst, stream)] = (n, o, d, last)
 
     def due(self, inst: str, stream: str, now: int, every_ms: int) -> bool:
         _, _, _, last = self._state(inst, stream)
@@ -238,16 +261,19 @@ class DerivSync:
                     _, _, _, last = self._state(inst, stream)
                     jobs.append((((now - last) / every) if last else 1e9, inst, stream))
         jobs.sort(key=lambda j: -j[0])
-        jobs = [(0, 0, i, s) for _, i, s in jobs]
+        fwd = [(i, s, False) for _, i, s in jobs]
+        back = [(i, s, True) for _, i, s in jobs if s in ("oi:1H", "oi:1D") and not self._state(i, s)[2]]
         n_done = 0
-        for _, _, inst, stream in jobs:
+        for inst, stream, is_back in fwd + back:
             if deadline is not None and time.monotonic() >= deadline:
                 break
             try:
                 if stream == "funding":
                     self.funding(inst)
+                elif is_back:
+                    self.oi_history(inst, stream.split(":")[1])
                 else:
-                    self.oi(inst, stream.split(":")[1])
+                    self.oi(inst, stream.split(":")[1], backfill=False)
                 n_done += 1
             except (InstrumentNotFound, OkxError) as e:
                 log.debug("%s %s: %s", inst, stream, e)
