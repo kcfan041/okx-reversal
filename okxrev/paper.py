@@ -775,6 +775,37 @@ def _exit_candidates(trader_id: str, cache: dict[str, list[str]]) -> list[str]:
     return res
 
 
+def market_context(con: duckdb.DuckDBPyConnection, candle_db: Any | None = None) -> dict[str, Any]:
+    """Background for a leaderboard period: random-control per-trade means by side/exit, and (if a candle database
+    is given) the market's compounded median daily return over the same days."""
+    try:
+        pos = con.execute("SELECT trader_id, side, entry_ts, ret_net FROM positions WHERE book = 'C' AND state = 'closed'").df()
+    except duckdb.Error:
+        return {}
+    if pos.empty:
+        return {}
+    lo, hi = int(pos["entry_ts"].min()), int(pos["entry_ts"].max())
+    out: dict[str, Any] = {"from": lo, "to": hi, "days": (hi - lo) / DAY}
+    rnd = pos[pos["trader_id"].str.startswith("random")]
+    if len(rnd):
+        g = rnd.assign(exit=rnd["trader_id"].str.replace(r"^random_(long|short)_", "", regex=True)).groupby(["side", "exit"])["ret_net"]
+        out["random"] = [{"side": s, "exit": e, "n": int(len(x)), "mean": float(x.mean())} for (s, e), x in g]
+    if candle_db is not None:
+        try:
+            with db.open_db(candle_db, read_only=True, wait_sec=1.0, max_tries=5) as c:
+                r = c.execute("""
+                    WITH d AS (SELECT inst_id, ts, close FROM candles WHERE ts >= ? AND ts <= ? AND ts % 86400000 = 0),
+                         x AS (SELECT ts, close / LAG(close) OVER (PARTITION BY inst_id ORDER BY ts) - 1 AS r FROM d)
+                    SELECT ts, median(r) m, avg(CASE WHEN r < 0 THEN 1.0 ELSE 0.0 END) dn FROM x WHERE r IS NOT NULL GROUP BY ts ORDER BY ts""",
+                              [lo - lo % DAY, hi + DAY]).fetchall()
+            if r:
+                out["market_cum"] = float(np.prod([1 + m for _, m, _ in r]) - 1)
+                out["market_days"] = [{"ts": int(t), "median": float(m), "down": float(dn)} for t, m, dn in r]
+        except Exception:
+            pass
+    return out
+
+
 def status(cfg: Config) -> dict[str, Any]:
     try:
         con = connect(cfg, read_only=True)
@@ -790,6 +821,7 @@ def status(cfg: Config) -> dict[str, Any]:
             "n_open": int(con.execute("SELECT COUNT(*) FROM positions WHERE state IN ('open', 'pending')").fetchone()[0]),
             "n_closed": int(con.execute("SELECT COUNT(*) FROM positions WHERE state = 'closed'").fetchone()[0]),
             "leaderboard": leaderboard(con),
+            "market": market_context(con, cfg.paths.db),
         }
         llm = con.execute("SELECT COUNT(*), COALESCE(SUM(cost), 0) FROM llm_calls WHERE ts >= ?", [db.now_ms() - DAY]).fetchone()
         out["llm_24h"] = {"calls": int(llm[0]), "cost": float(llm[1])}

@@ -1059,19 +1059,40 @@ function diagCols(groups) {
   ];
 }
 
-function renderBoard(lb) {
+const sameDay = (r) => { const v = r.diag && r.diag.vs_same_day; return v ? v.excess : null; };
+function renderMarket(m) {
+  const el = $("#pp-market");
+  if (!m || !m.from) { el.innerHTML = ""; return; }
+  const rnd = (side, exit) => (m.random || []).find((x) => x.side === side && x.exit === exit);
+  const pick = ["24h", "6h", "1h"].find((e) => rnd("short", e) && rnd("long", e));
+  const parts = [`期間 ${utc(m.from).slice(0, 10)} ～ ${utc(m.to).slice(0, 10)}（${num(m.days, 1)} 天）`];
+  if (m.market_cum != null) {
+    const dn = (m.market_days || []).filter((d) => d.down > 0.7).length;
+    parts.push(`全市場每日漲跌中位數累計 ${pctC(m.market_cum, 1)}${dn ? `，其中 ${dn} 天有七成以上的幣下跌` : ""}`);
+  }
+  if (pick) parts.push(`隨機進場每筆（${pick}）：做空 ${pctC(rnd("short", pick).mean, 2)}、做多 ${pctC(rnd("long", pick).mean, 2)}`);
+  const s = rnd("short", pick || "24h"), l = rnd("long", pick || "24h");
+  const tilt = s && l && Math.abs(s.mean - l.mean) > 0.01 ? `<span class="warn">大盤方向明顯（${s.mean > l.mean ? "偏跌，任何做空都會好看" : "偏漲，任何做多都會好看"}），請以「扣同日隨機」判斷</span>` : "";
+  el.innerHTML = parts.join("；") + (tilt ? `<br>${tilt}` : "");
+}
+
+function renderBoard(lb, market) {
   const book = $("#pp-book").value;
+  if (market !== undefined) renderMarket(market);
   const rows = lb.map((r) => ({ ...r, b: r[book] || {} }));
-  rows.sort((a, b) => ((b.b.n ? (book === "C" ? b.b.day_mean : b.b.equity - b.b.start) : -1e9) - (a.b.n ? (book === "C" ? a.b.day_mean : a.b.equity - a.b.start) : -1e9)));
+  const key = (r) => (r.trader_id.startsWith("random") ? -1e6 : sameDay(r) ?? (r.b.n ? -1e3 + (r.b.mean ?? 0) : -1e9));
+  rows.sort((a, b) => key(b) - key(a));
   table($("#pp-board"), [
-    { t: "交易員", cls: "l wrap", f: (r) => `<b>${esc(r.trader_id)}</b><div class="muted">${esc(r.label)}</div>` },
+    { t: "交易員", cls: "l wrap", f: (r) => `<b>${esc(r.trader_id)}</b>${r.profitable ? ' <span class="badge ok" title="每筆平均為正、帳本 A 獲利、扣同日隨機顯著">有效</span>' : ""}<div class="muted">${esc(r.label)}</div>` },
     { t: "類型", f: (r) => KIND[r.kind] || r.kind },
     { t: "平倉", f: (r) => r.b.n || 0 }, { t: "持倉", f: (r) => r.b.open || 0 },
     { t: "天數", f: (r) => r.b.n_days || 0 },
     { t: "勝率", f: (r) => pct(r.b.win_rate, 0) },
     { t: "每筆平均", f: (r) => pctC(r.b.mean, 2) },
     { t: "日均", f: (r) => pctC(r.b.day_mean, 2) },
-    { t: book === "C" ? "合計報酬" : "權益", f: (r) => (book === "C" ? pctC(r.b.pnl, 1) : `${num(r.b.equity)} <span class="muted">(${usd((r.b.equity || 0) - (r.b.start || 0))})</span>`) },
+    { t: book === "C" ? "帳本 A 報酬" : "權益", f: (r) => (book === "C"
+      ? `<span title="1 萬 U、每筆 2% 本金、依時間順序複利；不是報酬加總">${pctC(r.book_a_ret, 1)}</span>`
+      : `${num(r.b.equity)} <span class="muted">(${usd((r.b.equity || 0) - (r.b.start || 0))})</span>`) },
     { t: "強平", f: (r) => (r.b.liquidations ? `<span class="neg">${r.b.liquidations}</span>` : 0) },
     { t: "勝過隨機", f: (r) => (r.vs_random ? `${pctC(r.vs_random.diff, 2)} t=${num(r.vs_random.t, 1)} ${r.vs_random.significant ? '<span class="badge ok">顯著</span>' : ""}` : "-") },
     ...diagCols(groupNames(lb)),
@@ -1091,20 +1112,22 @@ async function loadReplay() {
   $("#pp-src-meta").textContent = `${m.start} ～ ${m.end}，${m.n_insts} 個合約，${fmtN(m.signals)} 個決策，產生於 ${m.generated_at}（耗時 ${Math.round(m.elapsed_sec / 60)} 分）`;
   $("#pp-replay-note").innerHTML = `<ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
   const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab"].includes(x.kind));
-  rules.sort((a, b) => (b.C.day_mean ?? -9) - (a.C.day_mean ?? -9));
+  rules.sort((a, b) => (sameDay(b) ?? -9) - (sameDay(a) ?? -9));
   table($("#pp-replay-cmp"), [
-    { t: "交易員", cls: "l wrap", f: (x) => `<b>${esc(x.trader_id)}</b><div class="muted">${esc(x.label)}</div>` },
+    { t: "交易員", cls: "l wrap", f: (x) => `<b>${esc(x.trader_id)}</b>${x.profitable ? ' <span class="badge ok">有效</span>' : ""}<div class="muted">${esc(x.label)}</div>` },
     { t: "探索判定", f: (x) => (x.discovery ? `<span class="badge ${VERD[x.discovery.verdict] || ""}">${esc(x.discovery.verdict)}</span>` : "-") },
     { t: "探索・驗證段", f: (x) => (x.discovery ? pctC(x.discovery.valid, 2) : "-") },
     { t: "探索・保留段", f: (x) => (x.discovery ? pctC(x.discovery.holdout, 2) : "-") },
     { t: "盲測次數", f: (x) => `${x.C.n || 0} <span class="muted">(${x.C.n_days || 0} 天)</span>` },
+    { t: "盲測每筆", f: (x) => pctC(x.C.mean, 2) },
+    { t: "帳本 A", f: (x) => pctC(x.book_a_ret, 1) },
     { t: "盲測日均", f: (x) => pctC(x.C.day_mean, 2) },
     { t: "盲測勝率", f: (x) => pct(x.C.win_rate, 0) },
     { t: "勝過隨機", f: (x) => (x.vs_random ? `${pctC(x.vs_random.diff, 2)} t=${num(x.vs_random.t, 1)} ${x.vs_random.significant ? '<span class="badge ok">顯著</span>' : ""}` : "-") },
     ...diagCols(groupNames(r.leaderboard)),
     { t: "每月", f: (x) => `<div class="runchart" style="height:28px;width:180px">${(x.by_month || []).map((b) => `<div class="${b.mean < 0 ? "err" : ""}" style="height:${Math.min(100, Math.abs(b.mean) * 2000)}%" title="${b.m} ${pct(b.mean, 2)} (${b.n})"></div>`).join("")}</div>` },
   ], rules);
-  renderBoard(r.leaderboard);
+  renderBoard(r.leaderboard, r.market);
   loadPaperPositions();
   loadPaperEquity();
 }
@@ -1137,7 +1160,7 @@ async function loadPaper() {
   $("#pp-meta").innerHTML = `已跑 ${fmtN(s.n_ticks)} 輪（自 ${utc(s.first_tick).slice(0, 16)}），最新 K 線 ${utc(lt.last_bar)}，上一輪 ${ago(lt.tick_ts)} 耗時 ${num(lt.duration, 1)} 秒；
     決策 ${fmtN(s.n_decisions)}、持倉中 ${s.n_open}、已平倉 ${fmtN(s.n_closed)}；
     LLM ${s.llm_enabled ? `啟用（${esc(s.llm_model)}，24h ${s.llm_24h.calls} 次 $${num(s.llm_24h.cost, 3)}）` : '<span class="muted">未設定</span>'}`;
-  renderBoard(s.leaderboard);
+  renderBoard(s.leaderboard, s.market);
   renderModels(s.models || {});
   loadPaperPositions();
   loadPaperEquity();

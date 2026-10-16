@@ -908,6 +908,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     return app
 
 
+def port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m okxrev.web")
     ap.add_argument("--config", default=None)
@@ -921,6 +928,11 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.config)
     url = f"http://127.0.0.1:{args.port}/"
+    if port_in_use(args.port):
+        print(f"已經有網頁伺服器在 {url} 執行；不再啟動第二個。要重開請先關閉原本的（或用 --port 換連接埠）。")
+        if not args.no_browser:
+            webbrowser.open(url)
+        return 0
     print(f"okx-reversal web UI: {url}  (Ctrl+C to stop)")
     if not args.no_browser:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()

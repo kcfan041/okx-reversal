@@ -502,6 +502,8 @@ def compare(cfg: Config) -> dict[str, Any]:
     try:
         meta = {k: json.loads(v) for k, v in con.execute("SELECT k, v FROM replay_meta").fetchall()}
         lb = leaderboard(con)
+        from okxrev.paper import market_context
+        market = market_context(con, old_db_path(cfg) if old_db_path(cfg).exists() else None)
         pos = con.execute("SELECT trader_id, entry_ts, ret_net FROM positions WHERE state = 'closed' AND book = 'C'").df()
     finally:
         con.close()
@@ -517,7 +519,7 @@ def compare(cfg: Config) -> dict[str, Any]:
         d = disc.get(f"{prm.get('key')}|{prm.get('exit')}") if r["kind"] == "rule" else None
         rows.append({**r, "by_month": by_month.get(r["trader_id"], []),
                      "discovery": {"valid": d["valid"].get("day_mean"), "holdout": d["holdout"].get("day_mean"), "verdict": d["verdict"]} if d else None})
-    return {"exists": True, "meta": meta, "leaderboard": rows,
+    return {"exists": True, "meta": meta, "leaderboard": rows, "market": market,
             "caveats": ["只含目前仍在交易、且在測試期間已上市的合約；期間下架的幣無法取得（存活者偏差，偏樂觀）",
                         f"該期間沒有資金費率歷史，持倉以平均費率 {meta.get('funding_rate_assumed', 0):.5%} 每 8 小時估計扣除",
                         "資金費率／OI 條件在舊資料中為空值，相關條件不會觸發",
