@@ -2069,6 +2069,123 @@ function openLab(inst, at) {
   setTimeout(() => labAnalyze(inst, at, true), 300);
 }
 
+/* ---------------- settings panel ---------------- */
+let setData = null, setLastFocus = null;
+const fmtSetVal = (f, v) => {
+  if (v == null) return "-";
+  if (f.type === "bool") return v ? "開" : "關";
+  if (f.type === "choice") return f.options[v] || v;
+  if (Array.isArray(v)) return v.length ? v.join(" ") : "（空）";
+  return String(v);
+};
+function setInput(f) {
+  const id = `set-${f.path.replace(/\./g, "-")}`;
+  const v = f.value;
+  if (f.type === "bool") return `<input type="checkbox" id="${id}" ${v ? "checked" : ""}>`;
+  if (f.type === "choice") return `<select id="${id}">${Object.entries(f.options).map(([k, l]) => `<option value="${esc(k)}" ${k === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  if (f.type === "insts") return `<input id="${id}" value="${esc((v || []).join(" "))}" placeholder="例如 CT PUMP">`;
+  if (f.type === "intlist") return `<input id="${id}" value="${esc((v || []).join(" "))}" placeholder="例如 80 90">`;
+  return `<input type="number" id="${id}" value="${v ?? ""}" min="${f.min}" max="${f.max}" step="${f.type === "int" ? 1 : "any"}">`;
+}
+function readInput(f) {
+  const el = $(`#set-${f.path.replace(/\./g, "-")}`);
+  if (f.type === "bool") return el.checked;
+  if (f.type === "choice") return el.value;
+  if (f.type === "insts") return el.value;
+  if (f.type === "intlist") return el.value.split(/[\s,]+/).filter(Boolean).map(Number);
+  return el.value === "" ? null : Number(el.value);
+}
+function sameVal(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+async function openSettings(group) {
+  setLastFocus = document.activeElement;
+  $("#set-panel").classList.add("open");
+  $("#set-panel").setAttribute("aria-hidden", "false");
+  $("#set-backdrop").hidden = false;
+  await loadSettings();
+  const sec = group && $(`#set-sec-${group}`);
+  if (sec) { sec.open = true; sec.scrollIntoView({ block: "start" }); sec.classList.add("flash"); }
+  $("#set-close").focus();
+}
+function closeSettings() {
+  $("#set-panel").classList.remove("open");
+  $("#set-panel").setAttribute("aria-hidden", "true");
+  $("#set-backdrop").hidden = true;
+  if (setLastFocus) setLastFocus.focus();
+}
+async function loadSettings() {
+  let d;
+  try { d = await api("/api/settings"); } catch (e) { $("#set-body").innerHTML = `<p class="neg">${esc(e.message)}</p>`; return; }
+  setData = d;
+  const st = d.status;
+  const c = collectState;
+  $("#set-status").innerHTML = [
+    `OKX 唯讀金鑰：${st.okx_key ? '<span class="pos">已設定</span>' : '<span class="warn">未設定</span>'}`,
+    `LLM：${st.llm ? `<span class="pos">已設定</span>（${esc(st.llm_model || "")}）` : '<span class="warn">未設定</span>'}`,
+    `資料收集：${c ? (c.paused ? `<span class="neg">已暫停</span>` : '<span class="pos">執行中</span>') : "-"}`,
+    c && c.task ? `Windows 排程：${esc(c.task.state || "-")}` : "",
+  ].filter(Boolean).join("　");
+  const groups = {};
+  d.fields.forEach((f) => (groups[f.group] = groups[f.group] || []).push(f));
+  $("#set-body").innerHTML = Object.entries(d.groups).map(([g, label]) => {
+    const fs = groups[g] || [];
+    const extra = g === "collect" ? `<div class="set-row"><span class="k">資料收集總開關</span><button class="small" id="set-collect-toggle">${c && c.paused ? "恢復收集" : "暫停收集"}</button><span class="muted">同右上角開關</span></div>` : "";
+    return `<details class="set-sec" id="set-sec-${g}" ${g === "collect" ? "open" : ""}><summary>${esc(label)} <span class="muted" id="set-cnt-${g}">${fs.filter((f) => f.overridden).length ? `（${fs.filter((f) => f.overridden).length} 項已修改）` : ""}</span></summary>
+      ${extra}
+      ${fs.map((f) => `<div class="set-row ${f.overridden ? "changed" : ""}" data-path="${esc(f.path)}">
+          <label class="k" for="set-${f.path.replace(/\./g, "-")}">${esc(f.label)}</label>${setInput(f)}
+          <div class="muted set-help">${f.help ? esc(f.help) + "；" : ""}生效：${esc(f.when)}${f.overridden ? `；預設 ${esc(fmtSetVal(f, f.default))} <a href="#" class="set-reset1" data-path="${esc(f.path)}">回預設</a>` : ""}</div>
+        </div>`).join("")}
+      <div class="set-actions"><button class="primary small" data-save="${g}">儲存</button><button class="small" data-reset="${g}">本區全部回預設</button><span class="muted" id="set-msg-${g}"></span></div>
+    </details>`;
+  }).join("");
+  $("#set-body").querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", () => saveSettings(b.dataset.save)));
+  $("#set-body").querySelectorAll("[data-reset]").forEach((b) => b.addEventListener("click", () => resetSettings((groups[b.dataset.reset] || []).filter((f) => f.overridden).map((f) => f.path), b.dataset.reset)));
+  $("#set-body").querySelectorAll(".set-reset1").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); resetSettings([a.dataset.path], BY_SET_PATH(a.dataset.path).group); }));
+  const tg = $("#set-collect-toggle");
+  if (tg) tg.addEventListener("click", async () => { await collectSet(collectState && collectState.paused ? "resume" : "pause"); setTimeout(loadSettings, 900); });
+}
+const BY_SET_PATH = (p) => setData.fields.find((f) => f.path === p);
+async function saveSettings(group) {
+  const changes = {};
+  setData.fields.filter((f) => f.group === group).forEach((f) => {
+    const v = readInput(f);
+    const cmp = f.type === "insts" ? v.split(/[\s,]+/).filter(Boolean).map((x) => (x.includes("-") ? x.toUpperCase() : `${x.toUpperCase()}-USDT-SWAP`)) : v;
+    if (!sameVal(cmp, f.value)) changes[f.path] = v;
+  });
+  if (!Object.keys(changes).length) { $(`#set-msg-${group}`).textContent = "沒有變更"; return; }
+  try {
+    const r = await post("/api/settings", { changes });
+    toast(r.message);
+    await loadSettings();
+    $(`#set-sec-${group}`).open = true;
+    $(`#set-msg-${group}`).textContent = "已儲存";
+    afterSettings(Object.keys(changes));
+  } catch (e) { $(`#set-msg-${group}`).innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+}
+async function resetSettings(paths, group) {
+  if (!paths.length) return;
+  const changes = Object.fromEntries(paths.map((p) => [p, null]));
+  try {
+    const r = await post("/api/settings", { changes });
+    toast(`已回預設（${paths.length} 項）`, !r.ok);
+    await loadSettings();
+    if (group) $(`#set-sec-${group}`).open = true;
+    afterSettings(paths);
+  } catch (e) { toast(e.message, true); }
+}
+function afterSettings(paths) {
+  if (paths.includes("heat.watchlist") && currentTab === "ht") loadHeat();
+  if (paths.includes("chat.model")) aiReady = false;
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-settings]");
+  if (b) { e.preventDefault(); openSettings(b.dataset.settings || null); }
+});
+$("#set-close").addEventListener("click", closeSettings);
+$("#set-backdrop").addEventListener("click", closeSettings);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#set-panel").classList.contains("open")) closeSettings(); });
+
 /* ---------------- polling ---------------- */
 setInterval(() => {
   if (document.hidden) return;

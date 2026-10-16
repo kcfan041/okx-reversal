@@ -211,6 +211,10 @@ def load_config(path: str | Path | None = None, root: Path | None = None) -> Con
     with open(src, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     validate(raw)
+    from okxrev import settings as _settings
+    base = copy.deepcopy(raw)
+    if not os.environ.get("OKXREV_NO_SETTINGS"):
+        raw = _settings.apply(raw, _settings.load_overrides(root))
     p = raw["paths"]
     paths = Paths(
         root=root,
@@ -219,4 +223,6 @@ def load_config(path: str | Path | None = None, root: Path | None = None) -> Con
         results=_resolve(p["results"], root),
         lock=_resolve(p["lock"], root),
     )
-    return Config(raw=raw, paths=paths, source=src)
+    cfg = Config(raw=raw, paths=paths, source=src)
+    cfg._cache["base_raw"] = base
+    return cfg

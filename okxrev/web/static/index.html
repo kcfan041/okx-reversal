@@ -41,8 +41,19 @@
   <div id="jobs" class="jobs" aria-live="polite"></div>
   <button id="collect-sw" class="collect-sw" title="資料收集總開關（同步、紙上交易、提醒）；點一下暫停或恢復，網頁的即時查詢不受影響">資料收集：-</button>
   <div id="hdr-state"></div>
+  <button id="btn-settings" class="gear" title="設定" aria-label="設定" data-settings="">⚙</button>
 </header>
 <div id="toast" role="status" aria-live="polite"></div>
+<div id="set-backdrop" class="set-backdrop" hidden></div>
+<aside id="set-panel" class="set-panel" aria-label="設定" aria-hidden="true">
+  <div class="set-head">
+    <h2>設定</h2>
+    <button id="set-close" class="small" aria-label="關閉">✕</button>
+  </div>
+  <div id="set-status" class="set-status muted"></div>
+  <div id="set-body" class="set-body"></div>
+  <p class="muted set-foot">設定存在 <code>data/settings.json</code>，會覆蓋 <code>config.yaml</code> 的同名值；不會修改 <code>config.yaml</code> 或 <code>.env</code>。API 金鑰請在 <code>.env</code> 設定。</p>
+</aside>
 
 <main>
 <!-- 儀表板 -->
@@ -80,7 +91,7 @@
 <!-- 同步控制 -->
 <section id="tab-ctrl" class="tab">
   <div class="panel">
-    <h2>控制</h2>
+    <h2>控制 <button class="gear-sm" data-settings="collect" title="資料收集設定">⚙</button></h2>
     <div class="row">
       <button id="btn-run" class="primary">立即執行同步</button>
       <button id="btn-pause">暫停收集</button>
@@ -358,7 +369,7 @@
     </div>
   </div>
   <div class="panel">
-    <h2>交易員排行
+    <h2>交易員排行 <button class="gear-sm" data-settings="paper" title="紙上交易設定">⚙</button>
       <select id="pp-book"><option value="C">C：只記報酬率</option><option value="A">A：10,000U 每筆 2% 1x</option><option value="B">B：仿你的習慣 20x</option></select>
     </h2>
     <div id="pp-market" class="pp-market"></div>
@@ -391,6 +402,7 @@
       <span>關注清單</span>
       <input id="ht-watch" style="flex:1" placeholder="例如 CT-USDT-SWAP PUMP-USDT-SWAP">
       <button id="btn-ht-watch">儲存</button>
+      <button class="gear-sm" data-settings="heat" title="過熱監控設定">⚙</button>
       <span id="ht-meta" class="muted"></span>
     </div>
     <details class="hint"><summary>過熱分數怎麼算？</summary>過熱分數 0～100：每項指標換算成「這個幣自己過去 30 天的百分位」，再平均成五大類（情緒與爆倉類尚無歷史，只供參考、不計入分數）。每次紙上交易那一輪更新；只提醒，不下單。</details>
@@ -547,6 +559,7 @@
       <div class="row">
         <label>合約 <input id="ai-inst" list="kl-insts" placeholder="例如 CT" style="width:170px"></label>
         <label>模型 <select id="ai-model"></select></label>
+        <button class="gear-sm" data-settings="ai" title="AI 設定">⚙</button>
         <span id="ai-meta" class="muted"></span>
       </div>
       <div id="ai-log" class="ai-log"></div>

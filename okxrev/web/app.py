@@ -72,6 +72,10 @@ class WatchReq(BaseModel):
     insts: list[str] = Field(max_length=50)
 
 
+class SettingsReq(BaseModel):
+    changes: dict[str, Any] = Field(max_length=60)
+
+
 class AccountRunReq(BaseModel):
     sync: bool = True
     replicate: bool = True
@@ -553,21 +557,37 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/api/heat/watchlist")
     def heat_watchlist(req: WatchReq) -> JSONResponse:
         insts = [_check_inst(i.strip().upper()) for i in req.insts if i.strip()]
-        p = cfg.source or (cfg.paths.root / "config.yaml")
-        import yaml
-        text = Path(p).read_text(encoding="utf-8")
-        new = "  watchlist: [" + ", ".join(insts) + "]"
-        lines = text.splitlines()
-        for k, line in enumerate(lines):
-            if line.strip().startswith("watchlist:"):
-                lines[k] = new
-                break
-        else:
-            raise HTTPException(500, "config.yaml 沒有 heat.watchlist")
-        Path(p).write_text("\n".join(lines) + "\n", encoding="utf-8")
-        cfg.raw.setdefault("heat", {})["watchlist"] = insts
-        yaml.safe_load(Path(p).read_text(encoding="utf-8"))
+        _save_settings({"heat.watchlist": insts})
         return ok({"ok": True, "message": f"關注清單已更新（{len(insts)} 個）", "watchlist": insts})
+
+    def _save_settings(changes: dict[str, Any]) -> dict[str, Any]:
+        from okxrev import settings as S
+        try:
+            ov = S.save(cfg.paths.root, changes)
+        except S.SettingsError as e:
+            raise HTTPException(400, str(e))
+        base = cfg._cache.get("base_raw") or cfg.raw
+        import copy
+        fresh = S.apply(copy.deepcopy(base), ov)
+        cfg.raw.clear()
+        cfg.raw.update(fresh)
+        return ov
+
+    @app.get("/api/settings")
+    def settings_get() -> JSONResponse:
+        from okxrev import settings as S
+        from okxrev.config import load_credentials, load_env
+        base = cfg._cache.get("base_raw") or cfg.raw
+        ov = S.load_overrides(cfg.paths.root)
+        llm = load_env(("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"), cfg.paths.root)
+        status = {"okx_key": load_credentials(cfg.paths.root) is not None, "llm": bool(llm.get("LLM_API_KEY") and llm.get("LLM_BASE_URL")),
+                  "llm_model": llm.get("LLM_MODEL"), "settings_file": str(S.settings_path(cfg.paths.root))}
+        return ok({"fields": S.describe(base, ov), "groups": S.GROUPS, "status": status})
+
+    @app.post("/api/settings")
+    def settings_post(req: SettingsReq) -> JSONResponse:
+        ov = _save_settings(req.changes)
+        return ok({"ok": True, "message": f"已儲存（{len(req.changes)} 項）", "overrides": ov})
 
     @app.get("/api/replay/summary")
     def replay_summary() -> JSONResponse:

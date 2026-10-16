@@ -390,17 +390,18 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     from okxrev import discover, llm, ml
     out: list[Trader] = []
     pc = cfg.paper
+    kinds = {"rule": True, "lab": True, "heat": True, "ml": True, "twin": True, "llm": True, **(pc.get("kinds") or {})}
     res = discover.load(cfg) or {}
-    active = [r for r in res.get("results", []) if r["verdict"] in ("可用", "觀察中")]
+    active = [r for r in res.get("results", []) if r["verdict"] in ("可用", "觀察中")] if kinds["rule"] else []
     exits_used = sorted({r["exit"] for r in active} | {"6h_sl2atr"})
     for tid, r in zip(rule_ids(cfg, active), active):
         out.append(RuleTrader(r, tid))
     from okxrev import custom_rules
-    lab = custom_rules.traders(cfg)
+    lab = custom_rules.traders(cfg) if kinds["lab"] else []
     out += lab
     exits_used = sorted(set(exits_used) | {t.exit for t in lab})
     hc = cfg.raw.get("heat") or {}
-    if hc.get("paper", True):
+    if hc.get("paper", True) and kinds["heat"]:
         verdicts = {}
         hp = cfg.paths.results / "heat.json"
         if hp.exists():
@@ -417,14 +418,14 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     for side in ("long", "short"):
         for ex in exits_used:
             out.append(RandomTrader(side, ex, prob))
-    if ml.has_model(cfg, "ml"):
+    if kinds["ml"] and ml.has_model(cfg, "ml"):
         out.append(ModelTrader(cfg, "ml"))
-    if ml.has_model(cfg, "twin"):
+    if kinds["twin"] and ml.has_model(cfg, "twin"):
         out.append(ModelTrader(cfg, "twin", "你的分身（最佳化出場）"))
         out.append(ModelTrader(cfg, "twin", "你的分身（你自己的出場習慣）", exit_override="you"))
-    if llm.enabled(cfg):
+    if kinds["llm"] and llm.enabled(cfg):
         best = [t for t in out if isinstance(t, RuleTrader)][:2]
-        if ml.has_model(cfg, "ml"):
+        if kinds["ml"] and ml.has_model(cfg, "ml"):
             best.append(ModelTrader(cfg, "ml"))
         for t in best:
             out.append(LLMReviewer(cfg, t))

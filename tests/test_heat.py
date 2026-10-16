@@ -251,9 +251,17 @@ def test_web_heat_endpoints(tmp_path):
     assert s["rows"][0]["score"] == 80 and "stretch" in s["dims"] and s["dims"]["sentiment"]["experimental"]
     assert c.get("/api/heat/coin?inst=../x").status_code == 400
     assert c.post("/api/heat/watchlist", json={"insts": ["X"]}).status_code == 403
+    before = src.read_text(encoding="utf-8")
     r = c.post("/api/heat/watchlist", headers={"x-okxrev": "1"}, json={"insts": ["PUMP-USDT-SWAP", "CT-USDT-SWAP"]}).json()
     assert r["watchlist"] == ["PUMP-USDT-SWAP", "CT-USDT-SWAP"]
-    assert load_config(src, root=tmp_path).raw["heat"]["watchlist"] == ["PUMP-USDT-SWAP", "CT-USDT-SWAP"]
+    assert src.read_text(encoding="utf-8") == before
+    import os
+    os.environ.pop("OKXREV_NO_SETTINGS", None)
+    try:
+        assert load_config(src, root=tmp_path).raw["heat"]["watchlist"] == ["PUMP-USDT-SWAP", "CT-USDT-SWAP"]
+    finally:
+        os.environ["OKXREV_NO_SETTINGS"] = "1"
+    assert cfg.raw["heat"]["watchlist"] == ["PUMP-USDT-SWAP", "CT-USDT-SWAP"]
     assert c.post("/api/heat/watchlist", headers={"x-okxrev": "1"}, json={"insts": ["bad;rm"]}).status_code == 400
     assert c.get("/api/heat/alerts").json() == []
     assert c.get("/api/heat/validation").json()["result"] is None
