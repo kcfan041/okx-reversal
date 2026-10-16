@@ -173,6 +173,64 @@ class StopVariant(Trader):
         return self._conv(self.inner.signals_batch(ctx, items))
 
 
+class InverseTrader(Trader):
+    """Contrarian of a discovered rule that loses clearly: same entries and exit, opposite side (stops are applied
+    on the new side by the engine, funding sign follows the side)."""
+    kind = "inverse"
+
+    def __init__(self, inner: Trader, info: dict[str, Any]):
+        self.inner = inner
+        self.info = info
+        self.exit = inner.exit
+        self.trader_id = f"inv_{inner.trader_id}"
+        self.label = f"反指標：{inner.label}（反向）"
+
+    def params(self) -> dict[str, Any]:
+        return {**self.inner.params(), "inverse_of": self.inner.trader_id, "selection": self.info}
+
+    def prepare(self, ctx: Context) -> None:
+        self.inner.prepare(ctx)
+
+    def _flip(self, sigs: list[Signal]) -> list[Signal]:
+        from dataclasses import replace as _replace
+        out = []
+        for s in sigs:
+            side = "short" if s.side == "long" else "long"
+            out.append(_replace(s, trader_id=self.trader_id, side=side, features=dict(s.features), reason=f"反向：{s.reason}"[:500]))
+        return out
+
+    def signals(self, ctx: Context, inst: str, f: pd.DataFrame, bars: np.ndarray) -> list[Signal]:
+        return self._flip(self.inner.signals(ctx, inst, f, bars))
+
+    def signals_batch(self, ctx: Context, items: list[tuple[str, pd.DataFrame, np.ndarray]]) -> list[Signal]:
+        return self._flip(self.inner.signals_batch(ctx, items))
+
+
+INV_MIN_N = 30
+INV_MAX_MEAN = -0.004
+INV_BELOW_RANDOM = 0.003
+
+
+def inverse_candidates(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Discovered rules whose per-trade mean is clearly negative in BOTH the validation and holdout segments of the
+    discovery period (2025-10 onward; the blind period is never used to pick): n >= INV_MIN_N, mean <= INV_MAX_MEAN
+    and at least INV_BELOW_RANDOM below the same-period random mean. Rules that produce identical results (same
+    signal written two ways) are kept once."""
+    out, seen = [], set()
+    for r in results:
+        segs = ((r.get("valid") or {}, r.get("base_valid")), (r.get("holdout") or {}, r.get("base_hold")))
+        ok = all(s.get("n", 0) >= INV_MIN_N and s.get("mean") is not None and s["mean"] <= INV_MAX_MEAN
+                 and s["mean"] <= (b or 0.0) - INV_BELOW_RANDOM for s, b in segs)
+        if not ok:
+            continue
+        sig = (r["exit"], r["side"], r["valid"]["n"], round(r["valid"]["mean"], 6), r["holdout"]["n"], round(r["holdout"]["mean"], 6))
+        if sig in seen:
+            continue
+        seen.add(sig)
+        out.append(r)
+    return out
+
+
 class RandomTrader(Trader):
     kind = "random"
 
@@ -443,7 +501,7 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     out: list[Trader] = []
     pc = cfg.paper
     kinds = {"rule": True, "rule_sl20": True, "lab": True, "heat": True, "ml": True, "twin": True, "llm": True,
-             "follow_long": True, "follow_short": True, **(pc.get("kinds") or {})}
+             "follow_long": True, "follow_short": True, "inverse": True, **(pc.get("kinds") or {})}
     res = discover.load(cfg) or {}
     active = [r for r in res.get("results", []) if r["verdict"] in ("可用", "觀察中")] if kinds["rule"] else []
     exits_used = sorted({r["exit"] for r in active} | {"6h_sl2atr"})
@@ -455,6 +513,13 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
         if kinds.get("rule_sl20", True) and sl:
             out.append(StopVariant(rt, sl))
             exits_used = sorted(set(exits_used) | {sl})
+    if kinds.get("inverse", True):
+        inv = inverse_candidates(res.get("results", []))
+        for tid, r in zip(rule_ids(cfg, inv), inv):
+            info = {"valid_n": r["valid"]["n"], "valid_mean": r["valid"]["mean"], "base_valid": r["base_valid"],
+                    "holdout_n": r["holdout"]["n"], "holdout_mean": r["holdout"]["mean"], "base_hold": r["base_hold"]}
+            out.append(InverseTrader(RuleTrader(r, tid), info))
+            exits_used = sorted(set(exits_used) | {r["exit"]})
     from okxrev import custom_rules
     lab = custom_rules.traders(cfg) if kinds["lab"] else []
     out += lab

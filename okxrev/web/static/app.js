@@ -1091,7 +1091,7 @@ async function loadScan(refresh) {
 }
 
 /* ---------------- paper trading ---------------- */
-const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單" };
+const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單", inverse: "反指標" };
 const EXIT_WHY = { time: "到期", stop: "止損", liquidation: "強平", stale: "資料中斷", "data gap": "資料缺口" };
 let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {}, ppOpenRow = null, ppLastBoard = null, ppLastStatus = null;
 const PP_KEY = "okxrev.pp";
@@ -1105,7 +1105,7 @@ const ppSave = () => { try { localStorage.setItem(PP_KEY, JSON.stringify(ppState
   const [, src, tab, kind, book] = h;
   if (src === "live" || src === "replay") ppState.src = src;
   if (["board", "equity", "pos", "cmp", "models"].includes(tab)) ppState.tab = tab;
-  if (kind !== undefined && ["", "rule", "sl20", "follow", "heat", "model", "random"].includes(kind)) ppState.kind = kind;
+  if (kind !== undefined && ["", "rule", "sl20", "follow", "inverse", "heat", "model", "random"].includes(kind)) ppState.kind = kind;
   if (["A", "B", "C"].includes(book)) ppState.book = book;
 })();
 const ppSrc = () => ppState.src;
@@ -1334,7 +1334,7 @@ async function loadReplay() {
   $("#pp-meta").textContent = `盲測 ${m.start} ～ ${m.end}，${m.n_insts} 個合約，${fmtN(m.signals)} 個決策；產生於 ${m.generated_at}（耗時 ${Math.round(m.elapsed_sec / 60)} 分）`;
   $("#pp-src-meta").textContent = $("#pp-meta").textContent;
   $("#pp-replay-note").innerHTML = `<ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
-  const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab", "follow"].includes(x.kind));
+  const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab", "follow", "inverse"].includes(x.kind));
   rules.sort((a, b) => (sameDay(b) ?? -9) - (sameDay(a) ?? -9));
   table($("#pp-replay-cmp"), [
     { t: "交易員", cls: "l", f: (x) => `<span class="tid">${esc(x.trader_id)}</span>${x.profitable ? ' <span class="badge ok">有效</span>' : ""}` },

@@ -561,3 +561,31 @@ def test_llm_batch_review(tmp_path):
     bad = _Sess("not json")
     out2 = llm.review_batch(ctx_for(cfg, con, g, last, []), cfg, sigs[:2], session=bad)
     assert all(s.action == "skip_llm" and "批次失敗" in s.reason for s in out2)
+
+
+def test_inverse_candidates_and_flip(tmp_path):
+    from okxrev import discover as D
+    from okxrev.traders import InverseTrader, RuleTrader, inverse_candidates
+    key = next(r.key for r in D.enumerate_rules() if r.side == "short")
+    seg = lambda n, m: {"n": n, "mean": m}
+    good = {"key": key, "exit": "1h", "side": "short", "label": "x", "verdict": "無效", "valid": seg(50, -0.008), "holdout": seg(60, -0.009),
+            "base_valid": -0.003, "base_hold": -0.003}
+    dup = {**good, "key": key + "|dup"}
+    weak = {**good, "holdout": seg(60, -0.004)}
+    few = {**good, "valid": seg(10, -0.02)}
+    assert [r["key"] for r in inverse_candidates([good, dup, weak, few])] == [key]
+    cfg = make_cfg(tmp_path)
+    con = paper.connect(cfg)
+    prices = [100.0] * 8 + [100.0] * 2 + [110.0] * 30
+    g = bars(prices)
+    s = int(g.index[6])
+    base = Fixed("ruleZ_1h", {s}, side="short", exit_rule="1h")
+    inv = InverseTrader(base, {"valid_mean": -0.008})
+    eng = Engine(cfg, [inv], con)
+    eng.tick(ctx_for(cfg, con, g, s, [s]))
+    eng.tick(ctx_for(cfg, con, g, int(g.index[-1]), []))
+    side, ret = con.execute("SELECT side, ret_net FROM positions WHERE trader_id = 'inv_ruleZ_1h' AND book = 'C'").fetchone()
+    assert side == "long" and ret > 0.05
+    assert inv.kind == "inverse" and inv.params()["inverse_of"] == "ruleZ_1h"
+    from okxrev.follow import eligible
+    assert not eligible("inv_ruleZ_1h")
