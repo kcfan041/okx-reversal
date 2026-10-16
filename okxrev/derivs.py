@@ -25,6 +25,22 @@ log = logging.getLogger("okxrev.derivs")
 FUNDING_PATH = "/api/v5/public/funding-rate-history"
 OI_PATH = "/api/v5/rubik/stat/contracts/open-interest-history"
 OI_PERIODS = {"5m": 300_000, "1H": 3_600_000, "1D": 86_400_000}
+OI_1H_EVERY = 3_600_000
+FUNDING_GRACE = 5 * 60_000
+FUNDING_DEFAULT = 4 * 3_600_000
+FUNDING_MAX_AGE = 9 * 3_600_000
+
+
+def funding_intervals(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
+    """Settlement interval per coin = the most common gap between its last ~10 funding timestamps (2h/4h/8h)."""
+    try:
+        rows = con.execute("""
+            WITH x AS (SELECT inst_id, ts, ROW_NUMBER() OVER (PARTITION BY inst_id ORDER BY ts DESC) rn FROM funding),
+                 y AS (SELECT inst_id, ts - LEAD(ts) OVER (PARTITION BY inst_id ORDER BY ts DESC) d FROM x WHERE rn <= 10)
+            SELECT inst_id, mode(d) FROM y WHERE d > 0 GROUP BY 1""").fetchall()
+    except duckdb.Error:
+        return {}
+    return {i: int(d) for i, d in rows if d and 3_600_000 <= d <= 24 * 3_600_000}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS funding (
@@ -91,6 +107,7 @@ class DerivSync:
         self.buf: dict[str, list[tuple]] = {"funding": [], "open_interest": []}
         self.states: dict[tuple[str, str], tuple[int | None, int | None, bool, int | None]] = {}
         self.dirty: set[tuple[str, str]] = set()
+        self.intervals: dict[str, int] = {}
         if con is not None:
             ensure_schema(con)
             self.load_states(con)
@@ -98,6 +115,7 @@ class DerivSync:
     def load_states(self, con: duckdb.DuckDBPyConnection) -> None:
         for r in con.execute("SELECT inst_id, stream, newest_ts, oldest_ts, backfill_done, last_run FROM derivs_state").fetchall():
             self.states[(r[0], r[1])] = (r[2], r[3], bool(r[4]), r[5])
+        self.intervals = funding_intervals(con)
 
     def _state(self, inst: str, stream: str) -> tuple[int | None, int | None, bool, int | None]:
         return self.states.get((inst, stream), (None, None, False, None))
@@ -183,14 +201,39 @@ class DerivSync:
         _, _, _, last = self._state(inst, stream)
         return last is None or now - last >= every_ms
 
-    def run(self, insts: list[str], deadline: float | None = None, on_batch: Callable[[], None] | None = None) -> dict[str, Any]:
+    def funding_due(self, inst: str, now: int) -> tuple[bool, float]:
+        """Funding settles every 2/4/8h depending on the coin. Due once the next settlement (last settled + the
+        coin's interval) is FUNDING_GRACE past, or when the last attempt is older than FUNDING_MAX_AGE (safety net
+        for coins whose interval changed). Unknown interval -> every FUNDING_DEFAULT."""
+        newest, _, _, last = self._state(inst, "funding")
+        if last is None:
+            return True, 1e9
+        iv = self.intervals.get(inst)
+        if newest is not None and iv:
+            nxt = newest + iv + FUNDING_GRACE
+            if now >= nxt and last < nxt:
+                return True, (now - nxt) / iv + 1.0
+        if now - last >= FUNDING_MAX_AGE:
+            return True, (now - last) / FUNDING_MAX_AGE
+        if not iv and now - last >= FUNDING_DEFAULT:
+            return True, (now - last) / FUNDING_DEFAULT
+        return False, 0.0
+
+    def run(self, insts: list[str], deadline: float | None = None, on_batch: Callable[[], None] | None = None,
+            oi5m_insts: set[str] | None = None) -> dict[str, Any]:
         """Jobs are scheduled purely by staleness (oldest refresh first) within each stream's interval, so streams whose
         history can never be fully backfilled (OKX keeps only ~3 months of funding) cannot starve the others.
-        Each job always fetches the newest page and then pages back a little if history is still incomplete."""
+        Each job always fetches the newest page and then pages back a little if history is still incomplete.
+        5-minute OI is fetched only for `oi5m_insts` (None = every instrument); nothing reads it beyond research."""
         now = db.now_ms()
         jobs: list[tuple[float, str, str]] = []
         for inst in insts:
-            for stream, every in (("oi:5m", 15 * 60_000), ("funding", 4 * 3_600_000), ("oi:1H", 6 * 3_600_000), ("oi:1D", 86_400_000)):
+            ok, prio = self.funding_due(inst, now)
+            if ok:
+                jobs.append((prio, inst, "funding"))
+            for stream, every in (("oi:5m", 15 * 60_000), ("oi:1H", OI_1H_EVERY), ("oi:1D", 86_400_000)):
+                if stream == "oi:5m" and oi5m_insts is not None and inst not in oi5m_insts:
+                    continue
                 if self.due(inst, stream, now, every):
                     _, _, _, last = self._state(inst, stream)
                     jobs.append((((now - last) / every) if last else 1e9, inst, stream))
@@ -216,7 +259,8 @@ class DerivSync:
         return {"jobs": len(jobs), "done": n_done, "rows": self.n_rows, "requests": self.n_req}
 
 
-def sync_derivs(cfg: Config, client: OkxClient, deadline: float | None = None, max_sec: float | None = None) -> dict[str, Any]:
+def sync_derivs(cfg: Config, client: OkxClient, deadline: float | None = None, max_sec: float | None = None,
+                focus: list[str] | None = None) -> dict[str, Any]:
     if max_sec is not None:
         cap = time.monotonic() + max_sec
         deadline = cap if deadline is None else min(deadline, cap)
@@ -237,7 +281,9 @@ def sync_derivs(cfg: Config, client: OkxClient, deadline: float | None = None, m
         except db.DbBusy:
             log.warning("derivs flush deferred: database busy")
 
-    r = s.run(insts, deadline, on_batch=flush)
+    scope = str(cfg.sync.get("oi5m_scope", "focus")).lower()
+    oi5m = None if scope == "all" else set(focus or [])
+    r = s.run(insts, deadline, on_batch=flush, oi5m_insts=oi5m)
     flush()
     log.info("derivs: %d/%d jobs, %d rows, %d requests", r["done"], r["jobs"], r["rows"], r["requests"])
     return r

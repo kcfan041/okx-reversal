@@ -172,12 +172,70 @@ def test_derivs_no_starvation(tmp_path):
         s.states[(inst, "funding")] = (None, None, False, now - 60_000)
         s.states[(inst, "oi:5m")] = (None, None, True, now - 3 * 3_600_000)
     jobs = []
-    orig = s.funding
     s.funding = lambda inst, **k: jobs.append(("funding", inst))
     s.oi = lambda inst, period, **k: jobs.append((f"oi:{period}", inst))
     s.run(["A", "B"])
-    assert jobs[:2] == [("oi:1H", "A"), ("oi:1H", "B")] or jobs[0][0] in ("oi:1H", "oi:1D")
+    assert jobs[0][0] in ("oi:1H", "oi:1D")
     assert ("oi:5m", "A") in jobs and ("funding", "A") not in jobs
+
+
+def _sched(s, insts, **kw):
+    jobs = []
+    s.funding = lambda inst, **k: jobs.append(("funding", inst))
+    s.oi = lambda inst, period, **k: jobs.append((f"oi:{period}", inst))
+    s.run(insts, **kw)
+    return jobs
+
+
+def test_oi5m_only_for_focus(tmp_path):
+    import duckdb
+    from okxrev.db import now_ms
+    con = duckdb.connect(str(tmp_path / "d.duckdb"))
+    s = derivs.DerivSync(CFG, object(), con)
+    now = now_ms()
+    for inst in ("A", "B"):
+        for st in ("funding", "oi:1H", "oi:1D"):
+            s.states[(inst, st)] = (now, None, True, now)
+    jobs = _sched(s, ["A", "B"], oi5m_insts={"A"})
+    assert ("oi:5m", "A") in jobs and ("oi:5m", "B") not in jobs
+    jobs = _sched(s, ["A", "B"], oi5m_insts=None)
+    assert ("oi:5m", "B") in jobs
+
+
+@pytest.mark.parametrize("hours", [2, 4, 8])
+def test_funding_due_by_settlement_interval(tmp_path, hours, monkeypatch):
+    import duckdb
+    con = duckdb.connect(str(tmp_path / "d.duckdb"))
+    H = 3_600_000
+    t0 = 1_800_000_000_000 - 1_800_000_000_000 % (8 * H)
+    derivs.ensure_schema(con)
+    con.executemany("INSERT INTO funding VALUES (?, ?, ?, ?)", [("X", t0 - k * hours * H, 0.0001, 0.0001) for k in range(6)])
+    s = derivs.DerivSync(CFG, object(), con)
+    assert s.intervals["X"] == hours * H
+    s.states[("X", "funding")] = (t0, None, True, t0 + 60_000)
+    for st in ("oi:1H", "oi:1D"):
+        s.states[("X", st)] = (None, None, True, 10 ** 15)
+    for now, expect in ((t0 + hours * H, False), (t0 + hours * H + 6 * 60_000, True)):
+        monkeypatch.setattr(db, "now_ms", lambda n=now: n)
+        jobs = _sched(s, ["X"], oi5m_insts=set())
+        assert (("funding", "X") in jobs) is expect, (hours, now - t0)
+    s.states[("X", "funding")] = (t0, None, True, t0 + hours * H + 6 * 60_000)
+    monkeypatch.setattr(db, "now_ms", lambda: t0 + hours * H + 30 * 60_000)
+    assert ("funding", "X") not in _sched(s, ["X"], oi5m_insts=set())
+
+
+def test_oi1h_every_hour(tmp_path):
+    import duckdb
+    from okxrev.db import now_ms
+    con = duckdb.connect(str(tmp_path / "d.duckdb"))
+    s = derivs.DerivSync(CFG, object(), con)
+    now = now_ms()
+    s.states[("A", "funding")] = (now, None, True, now)
+    s.states[("A", "oi:1D")] = (now, None, True, now)
+    s.states[("A", "oi:1H")] = (now, None, True, now - 61 * 60_000)
+    assert ("oi:1H", "A") in _sched(s, ["A"], oi5m_insts=set())
+    s.states[("A", "oi:1H")] = (now, None, True, now - 30 * 60_000)
+    assert ("oi:1H", "A") not in _sched(s, ["A"], oi5m_insts=set())
 
 
 def test_scan_end_to_end(tmp_path):

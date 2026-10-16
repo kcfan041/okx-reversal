@@ -335,10 +335,11 @@ def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool
             if cfg.sync.get("derivs", True) and not smoke and not only:
                 syncer.writer.flush()
                 from okxrev.derivs import sync_derivs
-                sync_derivs(cfg, syncer.client, deadline - 5, max_sec=float(cfg.sync.get("derivs_max_sec", 60)))
                 from okxrev.heat import focus_insts
                 from okxrev.heatdata import sync_heat
-                sync_heat(cfg, syncer.client, deadline - 5, max_sec=float(cfg.sync.get("heat_max_sec", 60)), focus=focus_insts(cfg))
+                focus = focus_insts(cfg)
+                sync_derivs(cfg, syncer.client, deadline - 5, max_sec=float(cfg.sync.get("derivs_max_sec", 60)), focus=focus)
+                sync_heat(cfg, syncer.client, deadline - 5, max_sec=float(cfg.sync.get("heat_max_sec", 60)), focus=focus)
         except BudgetExceeded:
             note = "budget"
             log.info("time budget reached")
