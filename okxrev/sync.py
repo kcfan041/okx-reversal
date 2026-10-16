@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from filelock import FileLock, Timeout
 
@@ -398,6 +399,68 @@ def gap_summary(con: Any) -> pd.DataFrame:
     ).df()
 
 
+def _old_coverage(cfg: Config) -> dict[str, Any] | None:
+    from okxrev import replay
+    p = replay.old_db_path(cfg)
+    if not p.exists():
+        return None
+    try:
+        with db.open_db(p, read_only=True, wait_sec=0.5, max_tries=3) as con:
+            lo, hi, n = con.execute("SELECT MIN(oldest_ts), MAX(newest_ts), COUNT(*) FROM sync_state WHERE newest_ts IS NOT NULL").fetchone()
+    except Exception:
+        return {"busy": True}
+    return {"from": _iv(lo), "to": _iv(hi), "n_insts": int(n or 0)}
+
+
+FRESH_EXPECT_H = {"funding": 8.0, "oi_1h": 1.0, "oi_1d": 24.0, "oi_5m": 0.25, "taker": 1.0, "mark": 1.0, "ls": 0.25, "liq": 0.5}
+FRESH_LABEL = {"funding": "資金費率", "oi_1h": "OI 每小時", "oi_1d": "OI 每天", "oi_5m": "OI 每 5 分（關注幣）",
+               "taker": "主動買賣量", "mark": "合約溢價", "ls": "多空比（關注幣）", "liq": "爆倉抓取（全市場）"}
+
+
+def freshness(cfg: Config, con: Any, now: int) -> list[dict[str, Any]]:
+    """How far behind each derivative feed is: age of the newest row per coin (median / max over coins). Funding
+    is judged against each coin's own settlement interval; feeds collected only for focus coins use those coins."""
+    from okxrev.heat import focus_insts
+    focus = list(dict.fromkeys(focus_insts(cfg)))
+    q = {
+        "funding": ("SELECT inst_id, MAX(ts) FROM funding GROUP BY 1", None),
+        "oi_1h": ("SELECT inst_id, MAX(ts) FROM open_interest WHERE period = '1H' GROUP BY 1", None),
+        "oi_1d": ("SELECT inst_id, MAX(ts) FROM open_interest WHERE period = '1D' GROUP BY 1", None),
+        "oi_5m": ("SELECT inst_id, MAX(ts) FROM open_interest WHERE period = '5m' GROUP BY 1", focus),
+        "taker": ("SELECT inst_id, MAX(ts) FROM taker_volume GROUP BY 1", None),
+        "mark": ("SELECT inst_id, MAX(ts) FROM mark_index GROUP BY 1", None),
+        "ls": ("SELECT inst_id, MAX(ts) FROM ls_ratio GROUP BY 1", focus),
+        "liq": ("SELECT inst_id, MAX(last_run) FROM heat_state WHERE stream = 'liq' GROUP BY 1", None),
+    }
+    out = []
+    intervals: dict[str, int] = {}
+    try:
+        from okxrev.derivs import funding_intervals
+        intervals = funding_intervals(con)
+    except Exception:
+        pass
+    for k, (sql, only) in q.items():
+        try:
+            rows = con.execute(sql).fetchall()
+        except Exception:
+            continue
+        if only is not None:
+            rows = [r for r in rows if r[0] in set(only)]
+        rows = [r for r in rows if r[1] is not None]
+        if not rows:
+            continue
+        ages = np.array([(now - int(t)) / 3_600_000 for _, t in rows])
+        expect = FRESH_EXPECT_H[k]
+        if k == "funding":
+            behind = np.array([(now - int(t)) / 3_600_000 - intervals.get(i, 8 * 3_600_000) / 3_600_000 for i, t in rows])
+            late = int((behind > 0.5).sum())
+        else:
+            late = int((ages > 2 * expect + (1.0 if k in ("oi_1h", "taker", "mark") else 0.0)).sum())
+        out.append({"key": k, "label": FRESH_LABEL[k], "n": len(rows), "median_h": float(np.median(ages)), "max_h": float(ages.max()),
+                    "expect_h": expect, "late": late})
+    return out
+
+
 def pause_flag(cfg: Config):
     return cfg.paths.db.parent / "PAUSE"
 
@@ -431,6 +494,7 @@ def collect_status(cfg: Config, with_gaps: bool = False, top: int = 10) -> dict[
         ).fetchone()
         counts = dict(con.execute("SELECT inst_id, COUNT(*) FROM candles GROUP BY inst_id").fetchall())
         gaps = gap_summary(con) if with_gaps else None
+        out["freshness"] = freshness(cfg, con, now)
 
     out["n_live"] = int((ov["state"] == "live").sum())
     out["n_delisted"] = int((ov["state"] == "delisted").sum())
@@ -450,6 +514,20 @@ def collect_status(cfg: Config, with_gaps: bool = False, top: int = 10) -> dict[
             current = li
     out["layers"] = layers
     out["current_layer"] = current
+    with_hist = ov[ov["oldest_ts"].notna()]
+    not_done = [s for s in states if s.oldest_ts is not None and not is_done_for(s, targets[-1])] if targets else []
+    out["coverage"] = {
+        "main_from": _iv(with_hist["oldest_ts"].min()) if len(with_hist) else None,
+        "main_to": _iv(with_hist["newest_ts"].max()) if len(with_hist) else None,
+        "n_insts": int(len(with_hist)),
+        "n_full": int(sum(1 for s in states if s.oldest_ts is not None and s.oldest_ts <= targets[-1])) if targets else 0,
+        "n_from_listing": int(sum(1 for s in states if s.oldest_ts is not None and targets and s.oldest_ts > targets[-1]
+                                  and is_done_for(s, targets[-1]))),
+        "n_incomplete": len(not_done),
+        "incomplete": [s.inst_id for s in not_done[:20]],
+        "target": targets[-1] if targets else None,
+        "old": _old_coverage(cfg),
+    }
 
     live = ov[(ov["state"] == "live") & ov["newest_ts"].notna()]
     if not live.empty:

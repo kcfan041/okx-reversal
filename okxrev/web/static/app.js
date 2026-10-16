@@ -121,13 +121,28 @@ async function loadDash() {
   ];
   $("#dash-cards").innerHTML = cards.map(([k, v, sub]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${esc(sub)}</div></div>`).join("");
 
+  const cv = s.coverage || {};
   const names = ["30 天", "90 天", "180 天", "一年"];
-  $("#dash-layers").innerHTML = s.layers.map((L, i) => {
+  const layerHtml = s.current_layer ? s.layers.map((L, i) => {
     const p = L.total ? (L.done / L.total) * 100 : 0;
-    const cur = s.current_layer === L.layer;
-    return `<div>第 ${L.layer} 層（${names[i] || ""}，到 ${utc(L.target).slice(0, 10)}）：${L.done}/${L.total} ${cur ? '<span class="badge warn">進行中</span>' : p >= 100 ? '<span class="badge ok">完成</span>' : ""}</div>
+    return `<div>第 ${L.layer} 層（${names[i] || ""}，到 ${utc(L.target).slice(0, 10)}）：${L.done}/${L.total}</div>
       <div class="bar ${p >= 100 ? "done" : ""}"><div style="width:${p.toFixed(1)}%"></div></div>`;
+  }).join("") : "";
+  const old = cv.old;
+  const fr = (s.freshness || []).map((f) => {
+    const bad = f.late > Math.max(2, f.n * 0.1);
+    return `<tr><td class="l">${esc(f.label)}</td><td>${f.n}</td><td class="${bad ? "warn" : ""}">${num(f.median_h, 1)} h</td><td>${num(f.max_h, 1)} h</td>
+      <td class="muted">${f.key === "funding" ? "依各幣結算間隔" : `每 ${f.expect_h >= 1 ? num(f.expect_h, 0) + " h" : Math.round(f.expect_h * 60) + " 分"}`}</td>
+      <td class="${bad ? "warn" : "muted"}">${f.late ? `${f.late} 個逾期` : "-"}</td></tr>`;
   }).join("");
+  $("#dash-layers").innerHTML = `
+    <dl class="kv">
+      <div>主資料：${cv.main_from ? `${utc(cv.main_from).slice(0, 10)} ～ ${utc(cv.main_to)}，${cv.n_insts} 個合約（${cv.n_full} 個從 ${utc(cv.target).slice(0, 10)} 起完整，${cv.n_from_listing} 個從上市起完整）` : "-"}
+        ${cv.n_incomplete ? `<span class="badge warn">${cv.n_incomplete} 個回補中</span>` : '<span class="badge ok">歷史完整</span>'}</div>
+      <div>舊資料（盲測用）：${old && old.from ? `${utc(old.from).slice(0, 10)} ～ ${utc(old.to).slice(0, 10)}，${old.n_insts} 個合約` : old && old.busy ? "忙碌中" : "無"}</div>
+    </dl>${layerHtml}
+    <h3>衍生品資料新鮮度 <small class="muted">（最新一筆距今；黃色＝超過預期間隔的幣太多）</small></h3>
+    <table><thead><tr><th class="l">資料</th><th>幣數</th><th>中位數</th><th>最舊</th><th>預期</th><th>逾期</th></tr></thead><tbody>${fr || '<tr><td colspan="6" class="muted">（無資料）</td></tr>'}</tbody></table>`;
 
   table($("#dash-cov"), [
     { t: "合約", k: "inst_id", cls: "l" },
@@ -147,11 +162,12 @@ async function loadDash() {
 
 function updateHeader(s) {
   const parts = [];
-  if (s.paused) parts.push('<span class="badge bad">已暫停</span>');
   if (s.current_layer) {
     const L = s.layers[s.current_layer - 1];
     parts.push(`<span class="badge">回補第 ${L.layer}/${s.layers.length} 層 ${L.done}/${L.total}</span>`);
-  } else if (s.layers) parts.push('<span class="badge ok">回補完成</span>');
+  }
+  const late = (s.freshness || []).filter((f) => f.late > Math.max(2, f.n * 0.1)).map((f) => f.label);
+  if (late.length) parts.push(`<span class="badge warn" title="${esc(late.join("、"))}">衍生品落後 ${late.length} 項</span>`);
   if (s.lag_min) parts.push(`<span class="badge ${s.lag_min.max > 15 ? "warn" : "ok"}">延遲 ${s.lag_min.max.toFixed(0)} 分</span>`);
   $("#hdr-state").innerHTML = parts.join(" ");
 }
