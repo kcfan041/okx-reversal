@@ -94,3 +94,21 @@ def test_paused_sync_exits(client):
     from okxrev.sync import run_sync
     (cfg.paths.db.parent / "PAUSE").write_text("x")
     assert run_sync(cfg, 10, None, False, False) == 0
+
+
+def test_second_web_server_does_not_start(monkeypatch, capsys):
+    import socket
+    from okxrev.web import app as webapp
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(16)
+    port = s.getsockname()[1]
+    try:
+        assert webapp.port_in_use(port)
+        called = []
+        monkeypatch.setattr("uvicorn.run", lambda *a, **k: called.append(1))
+        assert webapp.main(["--no-browser", "--port", str(port)]) == 0
+        assert called == [] and "已經有網頁伺服器" in capsys.readouterr().out
+    finally:
+        s.close()
+    assert not webapp.port_in_use(port)
