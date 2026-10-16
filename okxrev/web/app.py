@@ -148,8 +148,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return i
 
     @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
+    def index():
+        """index.html with ?v=<mtime> on app.js / style.css so a code change always reaches the browser; the page
+        itself is never cached."""
+        from fastapi.responses import HTMLResponse
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        for name in ("app.js", "style.css"):
+            v = int((STATIC / name).stat().st_mtime)
+            html = html.replace(f'/static/{name}"', f'/static/{name}?v={v}"')
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/status")
     def status(gaps: bool = False) -> JSONResponse:

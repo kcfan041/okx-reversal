@@ -112,3 +112,11 @@ def test_second_web_server_does_not_start(monkeypatch, capsys):
     finally:
         s.close()
     assert not webapp.port_in_use(port)
+
+
+def test_index_busts_static_cache(client):
+    c, _ = client
+    r = c.get("/")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+    import re
+    assert re.search(r'/static/app\.js\?v=\d+"', r.text) and re.search(r'/static/style\.css\?v=\d+"', r.text)
