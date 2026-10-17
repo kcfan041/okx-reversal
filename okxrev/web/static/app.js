@@ -1091,7 +1091,7 @@ async function loadScan(refresh) {
 }
 
 /* ---------------- paper trading ---------------- */
-const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單", inverse: "反指標" };
+const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單", inverse: "反指標", fade: "急漲回落" };
 const EXIT_WHY = { time: "到期", stop: "止損", liquidation: "強平", stale: "資料中斷", "data gap": "資料缺口" };
 let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {}, ppOpenRow = null, ppLastBoard = null, ppLastStatus = null;
 const PP_KEY = "okxrev.pp";
@@ -1105,7 +1105,7 @@ const ppSave = () => { try { localStorage.setItem(PP_KEY, JSON.stringify(ppState
   const [, src, tab, kind, book] = h;
   if (src === "live" || src === "replay") ppState.src = src;
   if (["board", "equity", "pos", "cmp", "models"].includes(tab)) ppState.tab = tab;
-  if (kind !== undefined && ["", "rule", "sl20", "follow", "inverse", "heat", "model", "random"].includes(kind)) ppState.kind = kind;
+  if (kind !== undefined && ["", "rule", "sl20", "follow", "inverse", "fade", "heat", "model", "random"].includes(kind)) ppState.kind = kind;
   if (["A", "B", "C"].includes(book)) ppState.book = book;
 })();
 const ppSrc = () => ppState.src;
@@ -1285,7 +1285,7 @@ function renderBoard(lb, market) {
   rows.sort((a, b) => key(b) - key(a));
   const groups = groupNames(lb);
   const cols = [
-    { t: "交易員", cls: "l", f: (r) => `<span class="tid">${esc(r.trader_id)}</span>${r.profitable ? ' <span class="badge ok" title="每筆平均為正、帳本 A 獲利、扣同日隨機顯著">有效</span>' : ""}${!r.profitable && r.diag && r.diag.vs_same_day && r.diag.vs_same_day.significant ? ' <span class="badge" title="扣同日隨機顯著，但每筆或帳本 A 不賺">顯著</span>' : ""}${lowSample(r) && !r.trader_id.startsWith("random") ? ' <span class="badge dim">樣本不足</span>' : ""}` },
+    { t: "交易員", cls: "l", f: (r) => `<span class="tid">${esc(r.trader_id)}</span>${r.profitable ? ' <span class="badge ok" title="每筆平均為正、帳本 A 獲利、扣同日隨機顯著">有效</span>' : ""}${!r.profitable && r.diag && r.diag.vs_same_day && r.diag.vs_same_day.significant ? ' <span class="badge" title="扣同日隨機顯著，但每筆或帳本 A 不賺">顯著</span>' : ""}${lowSample(r) && !r.trader_id.startsWith("random") ? ' <span class="badge dim">樣本不足</span>' : ""}${r.kind === "fade" && book === "B" ? ' <span class="badge bad" title="止損 50%，20 倍槓桿逆漲約 5% 就強平，這個帳本的結果沒有參考價值">帳本 B 不適用</span>' : ""}` },
     { t: "平倉", f: (r) => fmtN(r.b.n || 0) },
     { ...th("每筆平均", TIP.mean), f: (r) => pctC(r.b.mean, 2) },
     book === "C" ? { ...th("帳本 A", TIP.booka), f: (r) => pctC(r.book_a_ret, 1) }
@@ -1334,7 +1334,7 @@ async function loadReplay() {
   $("#pp-meta").textContent = `盲測 ${m.start} ～ ${m.end}，${m.n_insts} 個合約，${fmtN(m.signals)} 個決策；產生於 ${m.generated_at}（耗時 ${Math.round(m.elapsed_sec / 60)} 分）`;
   $("#pp-src-meta").textContent = $("#pp-meta").textContent;
   $("#pp-replay-note").innerHTML = `<ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
-  const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab", "follow", "inverse"].includes(x.kind));
+  const rules = r.leaderboard.filter((x) => ["rule", "ml", "heat", "lab", "follow", "inverse", "fade"].includes(x.kind));
   rules.sort((a, b) => (sameDay(b) ?? -9) - (sameDay(a) ?? -9));
   table($("#pp-replay-cmp"), [
     { t: "交易員", cls: "l", f: (x) => `<span class="tid">${esc(x.trader_id)}</span>${x.profitable ? ' <span class="badge ok">有效</span>' : ""}` },
@@ -1486,7 +1486,7 @@ async function loadLLM() {
 /* ---------------- heat ---------------- */
 let heatChart = null, heatPrice = null, heatSeries = {}, heatCoin = null, heatJobRunning = false;
 const HEAT_COLORS = { score: "#ffcc00", stretch: "#ef5350", flow: "#26a69a", leverage: "#ab47bc", premium: "#4aa3ff", sentiment: "#8d6e63" };
-const ALERT_KIND = { hot: '<span class="badge bad">過熱</span>', cooling: '<span class="badge warn">降溫</span>', rule: '<span class="badge ok">規則觸發</span>' };
+const ALERT_KIND = { hot: '<span class="badge bad">過熱</span>', cooling: '<span class="badge warn">降溫</span>', rule: '<span class="badge ok">規則觸發</span>', fade: '<span class="badge warn">急漲回落</span>' };
 const heatCell = (v) => (v == null ? "-" : `<span style="color:${v >= 80 ? "var(--down)" : v >= 60 ? "var(--warn)" : "var(--text)"}">${Math.round(v)}</span>`);
 
 $("#btn-ht-watch").addEventListener("click", async () => {

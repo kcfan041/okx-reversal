@@ -589,3 +589,35 @@ def test_inverse_candidates_and_flip(tmp_path):
     assert inv.kind == "inverse" and inv.params()["inverse_of"] == "ruleZ_1h"
     from okxrev.follow import eligible
     assert not eligible("inv_ruleZ_1h")
+
+
+def test_take_profit_short_and_long_and_stop_first(tmp_path):
+    cfg = make_cfg(tmp_path)
+    con = paper.connect(cfg)
+    prices = [100.0] * 8 + [100.0, 95.0, 87.0] + [87.0] * 20
+    g = bars(prices)
+    s = int(g.index[6])
+    eng = Engine(cfg, [Fixed("sh", {s}, side="short", exit_rule="7d_tp12_sl50"), Fixed("lg", {s}, side="long", exit_rule="7d_tp12_sl50")], con)
+    eng.tick(ctx_for(cfg, con, g, s, [s]))
+    tp = dict(con.execute("SELECT trader_id, tp_px FROM positions WHERE book='C'").fetchall())
+    assert tp["sh"] == pytest.approx(0.12)
+    eng.tick(ctx_for(cfg, con, g, int(g.index[-1]), []))
+    r = {t: (why, px, ret) for t, why, px, ret in con.execute("SELECT trader_id, exit_reason, exit_px, ret_net FROM positions WHERE book='C'").fetchall()}
+    assert r["sh"][0] == "tp" and r["sh"][1] == pytest.approx(88.0) and r["sh"][2] > 0.11
+    assert con.execute("SELECT state FROM positions WHERE book='C' AND trader_id='lg'").fetchone()[0] == "open"
+    ts = np.arange(3, dtype=np.int64)
+    out = paper.walk_position("short", 100.0, 150.0, None, 10, -1, ts, np.array([101.0, 160.0, 101.0]), np.array([99.0, 80.0, 99.0]),
+                              np.array([100.0, 100.0, 100.0]), None, 0.0, 0.0, 0.0, tp_px=88.0)
+    assert out[2] == "stop" and out[1] == 150.0
+
+
+def test_migrate_adds_tp_column(tmp_path):
+    import duckdb
+    p = tmp_path / "old.duckdb"
+    c = duckdb.connect(str(p))
+    c.execute("CREATE TABLE positions (pos_id VARCHAR PRIMARY KEY, state VARCHAR)")
+    c.close()
+    c = duckdb.connect(str(p))
+    paper.migrate(c)
+    assert "tp_px" in [r[0] for r in c.execute("DESCRIBE positions").fetchall()]
+    paper.migrate(c)

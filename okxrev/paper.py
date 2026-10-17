@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS positions (
     ret_net     DOUBLE,
     pnl         DOUBLE,
     mae         DOUBLE,
-    mfe         DOUBLE
+    mfe         DOUBLE,
+    tp_px       DOUBLE
 );
 CREATE TABLE IF NOT EXISTS books (
     trader_id VARCHAR,
@@ -149,6 +150,11 @@ EXIT_RULES = {
     "24h_sl10pct": (288, None), "24h_sl20pct": (288, None),
 }
 FIXED_STOP = {"24h_sl10pct": 0.10, "24h_sl20pct": 0.20}
+FIXED_TP: dict[str, float] = {}
+for _name, _tp, _sl in (("7d_tp12_sl50", 0.12, 0.50), ("7d_tp12_sl30", 0.12, 0.30)):
+    EXIT_RULES[_name] = (2016, None)
+    FIXED_STOP[_name] = _sl
+    FIXED_TP[_name] = _tp
 FALLBACK_STOP = 0.10
 SL20_BASES = ("15m", "1h", "6h", "24h", "3d")
 for _b in SL20_BASES:
@@ -301,9 +307,11 @@ def your_median_notional(cfg: Config) -> float | None:
 # ---------------------------------------------------------------- position walk (shared by live and replay)
 def walk_position(side: str, epx: float, stop_px: float | None, liq_px: float | None, deadline: int, checked: int,
                   ts: np.ndarray, h: np.ndarray, lo: np.ndarray, c: np.ndarray, fund: pd.DataFrame | None,
-                  fund_acc: float, mae: float, mfe: float) -> tuple[int | None, float | None, str | None, int, float, float, float]:
-    """Advance an open position over bars `ts` (all > checked, <= deadline). Liquidation is checked before the stop,
-    both before the time exit; funding settles at each funding timestamp in (previous bar, bar]."""
+                  fund_acc: float, mae: float, mfe: float, tp_px: float | None = None
+                  ) -> tuple[int | None, float | None, str | None, int, float, float, float]:
+    """Advance an open position over bars `ts` (all > checked, <= deadline). Liquidation, then stop, then take-profit
+    (a bar that touches both stop and target counts as the stop), then the time exit; funding settles at each
+    funding timestamp in (previous bar, bar]."""
     s = 1 if side == "long" else -1
     last_ts = checked
     fts = frate = None
@@ -327,10 +335,17 @@ def walk_position(side: str, epx: float, stop_px: float | None, liq_px: float | 
         for px, why in ((liq_px, "liquidation"), (stop_px, "stop")):
             if px is not None and ((s > 0 and lo[i] <= px) or (s < 0 and h[i] >= px)):
                 return t, float(px), why, t, fund_acc, mae, mfe
+        if tp_px is not None and ((s > 0 and h[i] >= tp_px) or (s < 0 and lo[i] <= tp_px)):
+            return t, float(tp_px), "tp", t, fund_acc, mae, mfe
         last_ts = t
         if t >= deadline:
             return t, float(c[i]), "time", t, fund_acc, mae, mfe
     return None, None, None, last_ts, fund_acc, mae, mfe
+
+
+def migrate(con: duckdb.DuckDBPyConnection) -> None:
+    """Columns added after a database was created (CREATE TABLE IF NOT EXISTS does not alter existing tables)."""
+    con.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS tp_px DOUBLE")
 
 
 # ---------------------------------------------------------------- engine
@@ -340,6 +355,7 @@ class Engine:
         self.traders = traders
         self.con = con
         con.execute(SCHEMA)
+        migrate(con)
         self.fee = float(cfg.metrics["fee_per_side"])
         self.slip = float(cfg.metrics["slippage_per_side"])
         fixed = cfg.paper.get("resolved_notional")
@@ -424,6 +440,9 @@ class Engine:
                 if free <= 0:
                     continue
                 notional = (eq * float(b.size_frac) * b.lever) if b.size_frac else float(b.notional or 0)
+                rf, sf = s.features.get("_risk_frac"), s.features.get("_stop_frac")
+                if rf and sf and b.size_frac and b.lever <= 1:
+                    notional = eq * float(rf) / float(sf)
                 notional = min(notional, free * b.lever)
                 if notional <= 0:
                     continue
@@ -434,15 +453,16 @@ class Engine:
                 "INSERT INTO positions (pos_id, decision_id, trader_id, book, inst_id, side, state, signal_ts, notional, lever, hold_bars, funding, fee, mae, mfe) "
                 "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, 0, 0, 0) ON CONFLICT DO NOTHING",
                 [pid, s.decision_id, s.trader_id, b.name, s.inst_id, s.side, s.bar_ts, notional, b.lever if not b.unit else 1.0, hold])
-            self.con.execute("UPDATE positions SET stop_px = ? WHERE pos_id = ?", [s.features.get("_stop_frac"), pid])
+            self.con.execute("UPDATE positions SET stop_px = ?, tp_px = ? WHERE pos_id = ?",
+                             [s.features.get("_stop_frac"), FIXED_TP.get(s.exit_rule), pid])
             n += 1
         return n
 
     # -- fills and exits
     def fill_pending(self, candles: dict[str, pd.DataFrame], feats: dict[str, pd.DataFrame]) -> int:
-        rows = self.con.execute("SELECT pos_id, inst_id, side, signal_ts, lever, stop_px, hold_bars FROM positions WHERE state = 'pending'").fetchall()
+        rows = self.con.execute("SELECT pos_id, inst_id, side, signal_ts, lever, stop_px, hold_bars, tp_px FROM positions WHERE state = 'pending'").fetchall()
         n = 0
-        for pid, inst, side, sts, lever, stop_frac, hold in rows:
+        for pid, inst, side, sts, lever, stop_frac, hold, tp_frac in rows:
             g = candles.get(inst)
             t = int(sts) + BAR
             if g is None:
@@ -457,17 +477,18 @@ class Engine:
             s = 1 if side == "long" else -1
             stop_px = o * (1 - s * stop_frac) if stop_frac else None
             liq_px = o * (1 - s * 0.9 / lever) if lever and lever > 1 else None
+            tp_px = o * (1 + s * tp_frac) if tp_frac else None
             self.con.execute("UPDATE positions SET state = 'open', entry_ts = ?, entry_px = ?, stop_px = ?, liq_px = ?, deadline_ts = ?, "
-                             "checked_ts = ?, fee = ? WHERE pos_id = ?",
-                             [t, o, stop_px, liq_px, t + (int(hold) - 1) * BAR, t - BAR, self._cost(inst, feats), pid])
+                             "checked_ts = ?, fee = ?, tp_px = ? WHERE pos_id = ?",
+                             [t, o, stop_px, liq_px, t + (int(hold) - 1) * BAR, t - BAR, self._cost(inst, feats), tp_px, pid])
             n += 1
         return n
 
     def check_open(self, candles: dict[str, pd.DataFrame], funding: dict[str, pd.DataFrame], now: int) -> int:
         rows = self.con.execute("SELECT pos_id, trader_id, book, inst_id, side, entry_ts, entry_px, notional, lever, stop_px, liq_px, deadline_ts, "
-                                "checked_ts, funding, fee, mae, mfe FROM positions WHERE state = 'open'").fetchall()
+                                "checked_ts, funding, fee, mae, mfe, tp_px FROM positions WHERE state = 'open'").fetchall()
         closed = 0
-        for (pid, trader, book, inst, side, ets, epx, notional, lever, stop_px, liq_px, deadline, checked, fund_acc, fee, mae, mfe) in rows:
+        for (pid, trader, book, inst, side, ets, epx, notional, lever, stop_px, liq_px, deadline, checked, fund_acc, fee, mae, mfe, tp_px) in rows:
             g = candles.get(inst)
             if g is None:
                 continue
@@ -483,7 +504,7 @@ class Engine:
                 continue
             exit_ts, exit_px, reason, last_ts, fund_acc, mae, mfe = walk_position(
                 side, epx, stop_px, liq_px, deadline, checked, seg.index.to_numpy(np.int64), seg["high"].to_numpy(float),
-                seg["low"].to_numpy(float), seg["close"].to_numpy(float), funding.get(inst), fund_acc, mae, mfe)
+                seg["low"].to_numpy(float), seg["close"].to_numpy(float), funding.get(inst), fund_acc, mae, mfe, tp_px)
             if reason:
                 self._close(pid, trader, book, side, epx, notional, lever, exit_ts, exit_px, reason, fund_acc, fee, mae, mfe)
                 closed += 1
@@ -582,6 +603,7 @@ def connect(cfg: Config, read_only: bool = False) -> duckdb.DuckDBPyConnection:
             con = duckdb.connect(str(p), read_only=read_only)
             if not read_only:
                 con.execute(SCHEMA)
+                migrate(con)
             return con
         except (duckdb.IOException, duckdb.ConnectionException) as e:
             if not db._is_lock_error(e):
@@ -625,6 +647,12 @@ def run_tick(cfg: Config, which: Iterable[str] | None = None, traders_: list[Tra
                 res["lab"] = {**custom_rules.live_alerts(cfg, con, last_bar, now), "sec": round(time.monotonic() - t1, 1)}
             except Exception:
                 log.exception("lab alerts failed")
+        if traders_ is None and any(t.kind == "fade" for t in trs):
+            try:
+                from okxrev import fade
+                res["fade_alerts"] = fade.live_alerts(cfg, con, now)
+            except Exception:
+                log.exception("fade alerts failed")
         if cfg.raw.get("heat") is not None and traders_ is None:
             t1 = time.monotonic()
             try:

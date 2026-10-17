@@ -243,6 +243,10 @@ def connect_out(cfg: Config, fresh: bool) -> duckdb.DuckDBPyConnection:
 def replay_traders(cfg: Config) -> list[Any]:
     from okxrev import traders as T
     trs = [t for t in T.build(cfg) if t.kind != "llm"]
+    if any(t.kind == "fade" for t in trs):
+        from okxrev import fade
+        op = old_db_path(cfg)
+        fade.FadeTrader.old_source = staticmethod(lambda c, a, b: fade.load_old_closes(c, a, b, op))
     heat_trs = [t for t in trs if t.kind == "heat"]
     if heat_trs:
         from okxrev import heat

@@ -119,6 +119,7 @@ uv run python -m okxrev.heat --evaluate       # 找門檻＋盲測，輸出 resu
 - 多空比與爆倉：關注清單與前 10 名每 5 分鐘；其他所有幣爆倉每 30 分鐘、多空比每 6 小時（`sentiment_all`、`liq_all_every_min`、`ls_all_every_min`），讓情緒類早點累積歷史。
 - 驗證（`--evaluate`）另外輸出風險表：24h 做空在止損 10%／20% 下的成績、6h＋止損 10%、24 小時內最大反向漲幅（MAE）分位數、逆漲 ≥20%／≥50% 的比例、資金費（只有 2026-06 之後）。
 - 紙上交易員 `heat80_*`、`heat90_*`：過熱分數第一次 ≥80／≥90（前 24 小時都未達到）時做空，出場 24h、24h＋止損 10%、24h＋止損 20%（`paper`、`paper_thresholds`、`paper_exits`）。同時進入即時紙上交易與舊資料盲測重播，與 rule03/04 同一排行比較。
+- 急漲回落做空 `fade_pump`（`okxrev/fade.py`）：前 30 天跌 ≥20%，24 小時內從低點漲 ≥50%，5 分 K 收盤回吐漲幅 25% 後，下一根開盤做空；止盈 12%、止損 50%、最長 7 天，同幣 72 小時冷卻。對照組 `fade_pump_sl30`（止損 30%）、`fade_pump_anypre`（不看前 30 天）。帳本 A 依每筆風險 2% 下單（權益 × 2% ÷ 止損），帳本 B（20x）不適用。觸發時在過熱監控提醒列出進場、止盈、止損與建議逐倉部位（用唯讀金鑰查 OKX 權益，查不到用 `paper.fade.equity_fallback`）。開關在設定面板 `paper.kinds.fade`、`paper.fade.*`。
 - AI 討論的「目前證據」由 `results/heat.json`、`results/discover.json` 與盲測重播結果自動產生，重跑驗證後自動更新。
 - 設定在 `config.yaml` 的 `heat:` 區塊（watchlist、alert_threshold、alert_cooldown_h、top_n）。
 
