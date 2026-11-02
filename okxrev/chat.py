@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -248,7 +249,7 @@ def evidence_summary(cfg: Config) -> str:
             for g, m in (cr.get("main") or {}).items():
                 st, pl = m.get("stats") or {}, m.get("placebo") or {}
                 if st.get("n"):
-                    parts.append(f"{CP.GROUP_LABEL[g]}在{CP.WINDOW_LABEL[m['window']]}相對同齡幣 {pc(st.get('mean'))}（{st['n']} 筆，隨機日期對照 p="
+                    parts.append(f"{CP.GROUP_LABEL[g]}在{CP.WINDOW_LABEL[m['window']]}相對同齡幣 {pc(math.expm1(st['mean']) if st.get('mean') is not None else None)}（{st['n']} 筆，隨機日期對照 p="
                                  f"{pl.get('p', float('nan')):.3f}，{m['verdict']}）")
             if parts:
                 lines.append(f"瓜分活動研究（{cr.get('generated_at')}，非盲測、樣本少）：" + "；".join(parts))

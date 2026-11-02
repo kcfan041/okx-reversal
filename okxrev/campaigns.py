@@ -621,9 +621,9 @@ def live_alerts(cfg: Config, con: Any, now: int) -> int:
         s, pl = m.get("stats") or {}, m.get("placebo") or {}
         if not s.get("n"):
             return ""
-        return (f"歷史上{WINDOW_LABEL[MAIN[grp]]}平均跑輸同齡幣 {-s['mean'] * 100:.1f}%（{s['n']} 筆，隨機日期對照 p={pl.get('p', float('nan')):.3f}，"
+        return (f"歷史上{WINDOW_LABEL[MAIN[grp]]}平均跑輸同齡幣 {-np.expm1(s['mean']) * 100:.1f}%（{s['n']} 筆，隨機日期對照 p={pl.get('p', float('nan')):.3f}，"
                 f"{m.get('verdict')}）" if s.get("mean") is not None and s["mean"] < 0 else
-                f"歷史上{WINDOW_LABEL[MAIN[grp]]}平均 {s.get('mean', 0) * 100:+.1f}%（{s['n']} 筆，{m.get('verdict')}）")
+                f"歷史上{WINDOW_LABEL[MAIN[grp]]}平均 {np.expm1(s.get('mean', 0)) * 100:+.1f}%（{s['n']} 筆，{m.get('verdict')}）")
 
     n = 0
     for r in ev.dropna(subset=["start_ts", "end_ts"]).itertuples(index=False):
