@@ -54,7 +54,7 @@ def family(trader_id: str) -> str:
 
 
 def eligible(trader_id: str) -> bool:
-    return not trader_id.startswith(("random", "llm_", "llmb_", "follow_", "inv_"))
+    return not trader_id.startswith(("random", "llm_", "llmb_", "follow_", "inv_")) and not trader_id.endswith("_ctrl")
 
 
 def rank(closed: pd.DataFrame, at: int, look_h: int, top: int, min_n: int) -> list[dict[str, Any]]:

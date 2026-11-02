@@ -40,6 +40,9 @@ FIELDS: list[dict[str, Any]] = [
     {"group": "paper", "path": "paper.fade.risk", "type": "float", "min": 0.001, "max": 0.1, "label": "急漲回落每筆風險（占權益，打到止損虧多少）",
      "help": "0.02 = 2%；部位 = 權益 × 風險 ÷ 止損 50%", "when": "下一筆"},
     {"group": "paper", "path": "paper.fade.equity_fallback", "type": "float", "min": 10, "max": 1e8, "label": "查不到 OKX 權益時用的帳戶金額（U）", "when": "下一則提醒"},
+    {"group": "paper", "path": "paper.kinds.campaign", "type": "bool", "label": "瓜分活動交易員（閃賺期間做空、交易賺幣結束後做空，各配對照組）",
+     "help": "只在即時紙上交易，沒有盲測", "when": "下一輪紙上交易"},
+    {"group": "heat", "path": "paper.campaign.alerts", "type": "bool", "label": "瓜分活動提醒（新公告、交易賺幣結束）", "when": "下一輪紙上交易"},
     {"group": "paper", "path": "paper.kinds.follow_long", "type": "bool", "label": "長期跟單（7～14 天重選）", "when": "下一輪紙上交易"},
     {"group": "paper", "path": "paper.kinds.follow_short", "type": "bool", "label": "短期跟單（對照組）", "help": "盲測粗測虧損，用來對照長期跟單",
      "when": "下一輪紙上交易"},
@@ -120,7 +123,7 @@ def apply(raw: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
 DEFAULTS: dict[str, Any] = {
     "sync.oi5m_scope": "focus", "announce.enabled": True, "announce.poll_min": 30, "heat.sentiment_all": True, "heat.liq_all_every_min": 60, "heat.ls_all_every_min": 360,
     "sync.derivs_max_sec": 60, "heat.watchlist": [], "heat.top_n": 10, "heat.alert_threshold": 80, "heat.alert_cooldown_h": 6,
-    "paper.kinds.rule": True, "paper.kinds.rule_sl20": True, "paper.kinds.follow_long": True, "paper.kinds.follow_short": True, "paper.kinds.inverse": True, "paper.kinds.fade": True, "paper.fade.alerts": True, "paper.fade.risk": 0.02, "paper.fade.equity_fallback": 1000.0,
+    "paper.kinds.rule": True, "paper.kinds.rule_sl20": True, "paper.kinds.follow_long": True, "paper.kinds.follow_short": True, "paper.kinds.inverse": True, "paper.kinds.fade": True, "paper.kinds.campaign": True, "paper.campaign.alerts": True, "paper.fade.alerts": True, "paper.fade.risk": 0.02, "paper.fade.equity_fallback": 1000.0,
     "paper.kinds.heat": True, "paper.kinds.lab": True, "paper.kinds.ml": True, "paper.kinds.twin": True,
     "paper.kinds.llm": True, "paper.kinds.llm_batch": True, "paper.llm.max_per_tick": 8, "paper.llm.max_per_bar": 2,
     "paper.llm.stale_min": 15, "heat.paper_thresholds": [80, 90], "chat.model": "claude", "chat.daily_calls": 500, "chat.max_rounds": 12,

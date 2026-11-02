@@ -501,7 +501,7 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     out: list[Trader] = []
     pc = cfg.paper
     kinds = {"rule": True, "rule_sl20": True, "lab": True, "heat": True, "ml": True, "twin": True, "llm": True,
-             "follow_long": True, "follow_short": True, "inverse": True, "fade": True, **(pc.get("kinds") or {})}
+             "follow_long": True, "follow_short": True, "inverse": True, "fade": True, "campaign": True, **(pc.get("kinds") or {})}
     res = discover.load(cfg) or {}
     active = [r for r in res.get("results", []) if r["verdict"] in ("可用", "觀察中")] if kinds["rule"] else []
     exits_used = sorted({r["exit"] for r in active} | {"6h_sl2atr"})
@@ -564,6 +564,8 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
             for ex in sorted({t.exit for t in fades}):
                 if not any(isinstance(t, RandomTrader) and t.side == side and t.exit == ex for t in out):
                     out.append(RandomTrader(side, ex, prob))
+    from okxrev import campaigns
+    out += campaigns.traders(cfg, kinds)
     from okxrev import follow
     out += follow.traders(kinds)
     if which:

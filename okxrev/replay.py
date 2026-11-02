@@ -242,7 +242,7 @@ def connect_out(cfg: Config, fresh: bool) -> duckdb.DuckDBPyConnection:
 
 def replay_traders(cfg: Config) -> list[Any]:
     from okxrev import traders as T
-    trs = [t for t in T.build(cfg) if t.kind != "llm"]
+    trs = [t for t in T.build(cfg) if t.kind not in ("llm", "campaign")]
     if any(t.kind == "fade" for t in trs):
         from okxrev import fade
         op = old_db_path(cfg)
