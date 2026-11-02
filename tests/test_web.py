@@ -120,3 +120,14 @@ def test_index_busts_static_cache(client):
     assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
     import re
     assert re.search(r'/static/app\.js\?v=\d+"', r.text) and re.search(r'/static/style\.css\?v=\d+"', r.text)
+
+
+def test_campaign_endpoints_without_data(client):
+    c, _ = client
+    r = c.get("/api/campaigns").json()
+    assert r["live"] == [] and r["campaigns"] == [] and r["status"] == {"exists": False} and r["has_results"] is False
+    assert c.get("/api/campaigns/results").json() is None
+    assert c.get("/api/campaigns/job").json()["running"] is False
+    assert c.post("/api/campaigns/evaluate").status_code == 403
+    d = c.get("/api/candles", params={"inst": "AAA-USDT-SWAP"}).json()
+    assert "campaigns" not in d or d["campaigns"] == []

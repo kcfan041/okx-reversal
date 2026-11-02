@@ -22,6 +22,7 @@
       <button data-tab="ev">事件</button>
       <button data-tab="dc">進場探索</button>
       <button data-tab="lab">事件實驗室</button>
+      <button data-tab="cp">瓜分活動</button>
     </div>
     <div class="nav-group">
       <div class="nav-label">交易</div>
@@ -208,6 +209,41 @@
 </section>
 
 <!-- 戰績 -->
+<section id="tab-cp" class="tab">
+  <div class="panel">
+    <div class="row">
+      <button id="btn-cp-eval" class="primary">重跑研究（約 10 秒）</button>
+      <button id="btn-cp-sync">更新公告</button>
+      <span id="cp-meta" class="muted"></span>
+    </div>
+    <details class="hint"><summary>這頁在做什麼？</summary>每次同步（最多每 30 分鐘）抓 OKX 公告，從「最新活動」找出瓜分活動，解析活動代幣與期間。研究比較活動代幣在各時段和「同齡、同期沒有活動的幣」的差距（超額報酬），並用同一批代幣的隨機日期當對照；閃賺／空投賺幣在活動期間每小時發獎勵，交易賺幣在活動結束後才發。報酬都換算成百分比（相對報酬）。研究結果不是交易建議。</details>
+    <pre id="cp-log" class="log short" style="display:none"></pre>
+  </div>
+  <div class="panel">
+    <h2>最近的活動 <small class="muted">（30 天內；報酬從活動開始算，還沒開始的從公告算；點一下開 K 線）</small></h2>
+    <div class="scroll"><table id="cp-live" class="clickable"></table></div>
+  </div>
+  <div class="panel">
+    <h2>研究結果 <small id="cp-res-meta" class="muted"></small></h2>
+    <div class="cards" id="cp-main"></div>
+    <h3>各時段 <small class="muted">（vs 同齡幣為主；隨機日期 p &lt; 0.05 且至少 8 筆才算顯著）</small></h3>
+    <div class="scroll"><table id="cp-sum"></table></div>
+    <div id="cp-vol" class="muted"></div>
+    <h3>相對同齡幣的累積走勢 <small class="muted">（平均與 95% 區間）</small></h3>
+    <div class="grid2" id="cp-curves"></div>
+    <h3>大盤方向 <small class="muted">（主要時段；BTC／大盤漲或跌時的代幣報酬）</small></h3>
+    <div class="scroll"><table id="cp-reg"></table></div>
+    <div id="cp-ols" class="muted"></div>
+    <h3>每一筆 <small class="muted">（點一下開 K 線）</small></h3>
+    <div class="scroll tall"><table id="cp-events" class="clickable"></table></div>
+    <ul id="cp-caveats" class="muted"></ul>
+  </div>
+  <div class="panel">
+    <h2>全部瓜分活動公告 <small id="cp-all-meta" class="muted"></small></h2>
+    <div class="scroll tall"><table id="cp-all" class="clickable"></table></div>
+  </div>
+</section>
+
 <section id="tab-ac" class="tab">
   <div class="panel">
     <div class="row">

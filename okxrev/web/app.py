@@ -324,6 +324,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             ev = pd.read_csv(ev_path, usecols=["mode", "inst_id", "event_ts", "red_ret_prev_close", "fwd_ret_24h"])
             ev = ev[(ev["inst_id"] == inst) & (ev["event_ts"] >= start) & (ev["event_ts"] < end)]
             out["events"] = ev.to_dict("records")
+        try:
+            from okxrev import announce
+            cp = announce.campaign_tokens(announce.load_campaigns(cfg))
+            if len(cp):
+                cp = cp[(cp["inst_id"] == inst) & (cp["p_time"] < end) & (cp["end_ts"].fillna(cp["p_time"]) + 7 * 86_400_000 > start)]
+                out["campaigns"] = [{"kind": announce.KIND_LABEL.get(r.kind, r.kind), "grp": r.grp, "title": r.title, "p_time": r.p_time,
+                                     "start_ts": None if pd.isna(r.start_ts) else int(r.start_ts), "end_ts": None if pd.isna(r.end_ts) else int(r.end_ts),
+                                     "dist_ts": None if pd.isna(r.dist_ts) else int(r.dist_ts)} for r in cp.itertuples(index=False)]
+        except Exception:
+            pass
         return ok(out)
 
     @app.get("/api/account/status")
@@ -958,6 +968,39 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(400, str(e))
         raise HTTPException(400, "bad op")
+
+    camp_job = tasks.Job("okxrev.campaigns", "瓜分活動")
+
+    @app.get("/api/campaigns")
+    def campaigns_list() -> JSONResponse:
+        from okxrev import announce, campaigns as CP
+        allc = announce.load_campaigns(cfg, status=None)
+        rows = []
+        for r in allc.itertuples(index=False):
+            rows.append({"url": r.url, "p_time": r.p_time, "kind": r.kind, "kind_label": announce.KIND_LABEL.get(r.kind, r.kind), "title": r.title,
+                         "title_zh": r.title_zh, "tokens": r.tokens, "start_ts": r.start_ts, "end_ts": r.end_ts, "dist_ts": r.dist_ts,
+                         "pre_sub_ts": r.pre_sub_ts, "pool": r.pool, "status": r.status, "period_raw": r.period_raw,
+                         "grp": "trade" if r.kind in announce.TRADE_KINDS else "earn"})
+        st = announce.status(cfg)
+        return ok({"live": CP.live_status(cfg), "campaigns": rows, "status": st, "kinds": announce.KIND_LABEL,
+                   "has_results": (cfg.paths.results / "campaigns.json").exists()})
+
+    @app.get("/api/campaigns/results")
+    def campaigns_results() -> JSONResponse:
+        from okxrev import campaigns as CP
+        return ok(CP.load(cfg))
+
+    @app.post("/api/campaigns/evaluate")
+    def campaigns_evaluate() -> JSONResponse:
+        return ok(camp_job.start(cfg, ["--evaluate"]))
+
+    @app.post("/api/campaigns/sync")
+    def campaigns_sync() -> JSONResponse:
+        return ok(camp_job.start(cfg, ["--backfill"], module="okxrev.announce"))
+
+    @app.get("/api/campaigns/job")
+    def campaigns_job() -> JSONResponse:
+        return ok(camp_job.status())
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app

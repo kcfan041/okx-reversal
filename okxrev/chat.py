@@ -240,6 +240,20 @@ def evidence_summary(cfg: Config) -> str:
             lines.append(f"進場探索（探索期判定，非盲測）：可用 {n['可用']} 條、觀察中 {n['觀察中']} 條")
         except Exception:
             pass
+    try:
+        from okxrev import campaigns as CP
+        cr = CP.load(cfg)
+        if cr:
+            parts = []
+            for g, m in (cr.get("main") or {}).items():
+                st, pl = m.get("stats") or {}, m.get("placebo") or {}
+                if st.get("n"):
+                    parts.append(f"{CP.GROUP_LABEL[g]}在{CP.WINDOW_LABEL[m['window']]}相對同齡幣 {pc(st.get('mean'))}（{st['n']} 筆，隨機日期對照 p="
+                                 f"{pl.get('p', float('nan')):.3f}，{m['verdict']}）")
+            if parts:
+                lines.append(f"瓜分活動研究（{cr.get('generated_at')}，非盲測、樣本少）：" + "；".join(parts))
+    except Exception:
+        pass
     from okxrev import ml
     if ml.has_model(cfg, "ml") or ml.has_model(cfg, "twin"):
         lines.append("機器學習與使用者分身：只有紙上交易／盲測重播的排行可作為證據，請以 paper_trading 工具查實際成績")

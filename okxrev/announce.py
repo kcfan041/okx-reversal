@@ -478,6 +478,11 @@ def load_campaigns(cfg: Config, status: str | None = "ok") -> pd.DataFrame:
         con.close()
     zh = zh.groupby("p_time")["title"].agg(lambda s: s.iloc[0] if len(s) == 1 else None)
     df["title_zh"] = df["p_time"].map(zh)
+    for c in ("start_ts", "end_ts", "pre_sub_ts", "dist_ts", "parsed_at"):
+        df[c] = df[c].astype("float64")
+    df = df.astype({c: object for c in ("tokens", "pool", "period_raw", "title_zh")}).where(df.notna(), None)
+    for c in ("start_ts", "end_ts", "pre_sub_ts", "dist_ts", "parsed_at"):
+        df[c] = df[c].astype("float64")
     return df
 
 

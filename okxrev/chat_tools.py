@@ -640,7 +640,13 @@ class Toolbox:
             out["heat_history_backfill"] = {s: f"{int(d or 0)}/{n}" for s, n, d in r}
         except Exception:
             out["heat_history_backfill"] = "忙碌中"
-        for name in ("discover.json", "heat.json", "review.json", "exits.json", "bots.json", "summary.json"):
+        try:
+            from okxrev import announce
+            st = announce.status(self.cfg)
+            out["announcements"] = {"from": _t(st.get("from")), "to": _t(st.get("to")), "campaigns": st.get("campaigns")} if st.get("exists") else None
+        except Exception:
+            out["announcements"] = None
+        for name in ("discover.json", "heat.json", "review.json", "exits.json", "bots.json", "summary.json", "campaigns.json"):
             p = self.cfg.paths.results / name
             out[name] = _t(int(p.stat().st_mtime * 1000)) if p.exists() else None
         out["watchlist"] = (self.cfg.raw.get("heat") or {}).get("watchlist")
@@ -761,6 +767,40 @@ class Toolbox:
                 "blind_shown": r["blind_shown"], "best_by_discovery": r["best"], "combos": combos,
                 "groups": [_rec(g, 4) for g in r["groups"]], "recent_examples": [{"inst": e["inst"], "time": _t(e["ts"]), "ret": _r(e["ret"], 4)} for e in r["examples"][:10]],
                 "note": "disc=找參數期、valid=驗證期；盲測期（2024-10～2025-09）只能由使用者在介面上按一次，AI 不會動用"}
+
+    def campaigns(self, inst: str | None = None) -> dict[str, Any]:
+        """OKX reward-pool campaigns (瓜分活動): research result (abnormal return by window, placebo, market direction),
+        campaigns of one coin (with per-window results) or the recent ones with the return so far."""
+        from okxrev import announce, campaigns as CP
+        res = CP.load(self.cfg) or {}
+        out: dict[str, Any] = {"notes": "超額報酬 = 代幣報酬 − 同齡、同期沒有活動的幣的中位數（對數報酬）；p 為隨機日期對照"}
+        if res:
+            out["research"] = {"generated_at": res.get("generated_at"), "n_events": res.get("n_events"),
+                               "main": {g: {"window": CP.WINDOW_LABEL[m["window"]], "verdict": m["verdict"], "abnormal": _rec(m.get("stats") or {}, 4),
+                                            "placebo_p": _r((m.get("placebo") or {}).get("p"), 3)} for g, m in (res.get("main") or {}).items()},
+                               "by_window": {g: {CP.WINDOW_LABEL[w]: _rec(v["ab"], 4) for w, v in res["summary"][g].items() if w in CP.WINDOWS}
+                                             for g in res.get("summary", {})},
+                               "market_direction": {g: [{"split": x["label"], "up": _rec(x["up_raw"], 4), "down": _rec(x["down_raw"], 4), "p": _r(x["p_raw"], 3)}
+                                                        for x in r.get("splits", [])] + [{"ols": f"{o['y']}~{o['x']}", "alpha": _r(o["alpha"], 4), "t_alpha": _r(o["t_alpha"], 2),
+                                                                                         "beta": _r(o["beta"], 2)} for o in r.get("ols", [])]
+                                                    for g, r in (res.get("regimes") or {}).items()},
+                               "groups": res.get("groups"), "caveats": res.get("caveats")}
+        else:
+            out["research"] = "尚未執行研究（瓜分活動分頁按「重跑研究」）"
+        if inst:
+            inst = norm_inst(inst)
+            evs = [e for e in res.get("events", []) if e.get("inst_id") == inst]
+            out["coin_history"] = [{"title": e["title"], "kind": announce.KIND_LABEL.get(e["kind"], e["kind"]), "start": _t(e["start_ts"]), "end": _t(e["end_ts"]),
+                                    **{f"{CP.WINDOW_LABEL[w]}_超額": _r(e.get(f"{w}_ab"), 4) for w in CP.WINDOWS}} for e in evs]
+            out["live"] = [d for d in CP.live_status(self.cfg, days=60) if d["inst_id"] == inst]
+        else:
+            out["live"] = CP.live_status(self.cfg, days=30)[:20]
+        for d in out.get("live", []):
+            for k in ("p_time", "start_ts", "end_ts", "dist_ts"):
+                d[k] = _t(d.get(k))
+            for k in ("ret", "vs_btc", "vs_alts"):
+                d[k] = _r(d.get(k), 4)
+        return out
 
     def custom_rules(self, rule_id: str | None = None) -> dict[str, Any]:
         """Rules saved from the event lab: definition, test results, recent triggers and paper results."""
@@ -916,6 +956,8 @@ TOOLS: dict[str, dict[str, Any]] = {
     "test_template": {"desc": "測試樣板（急漲後爆跌條件）的歷史成績：多空 × 多種出場，找參數期與驗證期分開，含依成交額/BTC 環境分組；不會動用盲測期",
                       "params": _p({"template": {"type": "object", "description": "欄位：rise_min, rise_max, rise_bars_max(5分K根數), drop_min, drop_max, drop_bars_max, retrace_min, vol_min, ret_bar_max, turnover_min, turnover_max, age_max_d, btc(陣列 weak/neutral/strong), cooldown"},
                                     "inst": INST, "at": TIME})},
+    "campaigns": {"desc": "OKX 瓜分活動（閃賺／空投賺幣／交易賺幣）：活動代幣在各時段相對同齡幣的超額報酬研究、隨機日期對照、大盤方向分組；給 inst 時列出這個幣的歷次活動與結果，否則列出最近的活動與到目前為止的報酬",
+                  "params": _p({"inst": INST})},
     "custom_rules": {"desc": "使用者在事件實驗室存的自訂規則：定義、測試與盲測結果、即時觸發與紙上交易結果", "params": _p({"rule_id": S})},
 }
 

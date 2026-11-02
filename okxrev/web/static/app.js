@@ -97,6 +97,7 @@ function showTab(t) {
   if (t === "ht") { loadHeat(); loadHeatValidation(); pollHeatJob(); }
   if (t === "ai") { loadInsts(); aiInit(); }
   if (t === "lab") { loadInsts(); labInit(); }
+  if (t === "cp") { loadCampaigns(); loadCampaignResults(); pollCampJob(); }
   if (t === "kl") {
     loadInsts();
     resizeCharts();
@@ -599,6 +600,15 @@ async function loadKline() {
     color: e.mode === "pump_red" ? "#ffcc00" : e.mode === "pump_red_btcweak" ? "#ff6f00" : "#9e9e9e",
     text: `${e.mode} ${pct(e.red_ret_prev_close)}`,
   }));
+  for (const cpn of d.campaigns || []) {
+    const add = (ms, text, color, shape) => {
+      if (ms != null && ms >= d.start && ms < d.end) marks.push({ time: Math.floor(ms / 300000) * 300, position: "belowBar", shape, color, text });
+    };
+    add(cpn.p_time, `${cpn.kind}公告`, "#4aa3ff", "circle");
+    add(cpn.start_ts, `${cpn.kind}開始`, "#4aa3ff", "arrowUp");
+    add(cpn.end_ts, `${cpn.kind}結束`, "#f0a020", "arrowUp");
+    add(cpn.dist_ts, "發獎勵", "#f0a020", "circle");
+  }
   if (tradeMarks.length && tradeMarks[0].inst === inst) marks.push(...tradeMarks.map(({ inst: _, ...m }) => m));
   marks.sort((a, b) => a.time - b.time);
   const seen = new Set();
@@ -611,7 +621,7 @@ async function loadKline() {
   const secs = (performance.now() - t0) / 1000;
   const days = (d.end - d.start) / 86400e3;
   const info = $("#kl-info");
-  info.textContent = `${inst}，${days >= 1 ? num(days, days < 10 ? 1 : 0) + " 天" : Math.round(days * 24) + " 小時"}，${d.t.length.toLocaleString()} 根${(d.events || []).length ? `，${d.events.length} 個事件` : ""}；${secs.toFixed(1)} 秒，${new Date().toLocaleTimeString()} 更新`;
+  info.textContent = `${inst}，${days >= 1 ? num(days, days < 10 ? 1 : 0) + " 天" : Math.round(days * 24) + " 小時"}，${d.t.length.toLocaleString()} 根${(d.events || []).length ? `，${d.events.length} 個事件` : ""}${(d.campaigns || []).length ? `，${d.campaigns.length} 檔瓜分活動` : ""}；${secs.toFixed(1)} 秒，${new Date().toLocaleTimeString()} 更新`;
   if (!d.t.length) klOverlay('<div class="muted">這段時間沒有 K 線資料</div>');
   info.classList.remove("flash");
   void info.offsetWidth;
@@ -1091,7 +1101,7 @@ async function loadScan(refresh) {
 }
 
 /* ---------------- paper trading ---------------- */
-const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單", inverse: "反指標", fade: "急漲回落" };
+const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單", inverse: "反指標", fade: "急漲回落", campaign: "瓜分活動" };
 const EXIT_WHY = { time: "到期", stop: "止損", liquidation: "強平", stale: "資料中斷", "data gap": "資料缺口" };
 let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {}, ppOpenRow = null, ppLastBoard = null, ppLastStatus = null;
 const PP_KEY = "okxrev.pp";
@@ -1486,7 +1496,8 @@ async function loadLLM() {
 /* ---------------- heat ---------------- */
 let heatChart = null, heatPrice = null, heatSeries = {}, heatCoin = null, heatJobRunning = false;
 const HEAT_COLORS = { score: "#ffcc00", stretch: "#ef5350", flow: "#26a69a", leverage: "#ab47bc", premium: "#4aa3ff", sentiment: "#8d6e63" };
-const ALERT_KIND = { hot: '<span class="badge bad">過熱</span>', cooling: '<span class="badge warn">降溫</span>', rule: '<span class="badge ok">規則觸發</span>', fade: '<span class="badge warn">急漲回落</span>' };
+const ALERT_KIND = { hot: '<span class="badge bad">過熱</span>', cooling: '<span class="badge warn">降溫</span>', rule: '<span class="badge ok">規則觸發</span>', fade: '<span class="badge warn">急漲回落</span>',
+  campaign: '<span class="badge">瓜分活動</span>', campaign_end: '<span class="badge warn">交易賺幣結束</span>' };
 const heatCell = (v) => (v == null ? "-" : `<span style="color:${v >= 80 ? "var(--down)" : v >= 60 ? "var(--warn)" : "var(--text)"}">${Math.round(v)}</span>`);
 
 $("#btn-ht-watch").addEventListener("click", async () => {
@@ -2367,7 +2378,182 @@ setInterval(() => {
   if (currentTab === "pp") pollPaperJobs();
   if (currentTab === "ht") pollHeatJob();
   if (currentTab === "lab") labPollJob();
+  if (currentTab === "cp") pollCampJob();
 }, 3000);
+
+/* ---------------- campaigns (瓜分活動) ---------------- */
+const CP_PHASE = { upcoming: '<span class="badge">即將開始</span>', running: '<span class="badge warn">進行中</span>', ended: '<span class="badge dim">已結束</span>' };
+const CP_STATUS = { ok: '<span class="badge ok">已解析</span>', no_token: '<span class="badge dim">無指定代幣</span>', no_period: '<span class="badge bad">期間解析失敗</span>',
+  no_page: '<span class="badge bad">內文抓取失敗</span>', pending: '<span class="badge">待解析</span>', skip: '<span class="badge dim">略過</span>' };
+const CP_VERD = { "顯著": "ok", "不顯著": "", "樣本不足": "dim" };
+const CP_GRP = { earn: "閃賺", trade: "交易賺幣" };
+const lpc = (v, d = 1) => (v == null ? "-" : pctC(Math.expm1(v), d));
+const lp = (v, d = 1) => (v == null ? "-" : pct(Math.expm1(v), d));
+let cpJobRunning = false;
+
+$("#btn-cp-eval").addEventListener("click", async () => {
+  try { const r = await post("/api/campaigns/evaluate"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); }
+  pollCampJob();
+});
+$("#btn-cp-sync").addEventListener("click", async () => {
+  try { const r = await post("/api/campaigns/sync"); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); }
+  pollCampJob();
+});
+
+function cpKline(inst, a, b) {
+  openKline(inst, a - 7 * 86400e3, Math.min(Date.now(), (b || a) + 7 * 86400e3));
+}
+
+async function pollCampJob() {
+  const j = await api("/api/campaigns/job").catch(() => null);
+  if (!j) return;
+  if (j.running || j.log.length) { $("#cp-log").style.display = ""; renderLog($("#cp-log"), j.log); }
+  $("#btn-cp-eval").disabled = $("#btn-cp-sync").disabled = j.running;
+  if (cpJobRunning && !j.running) {
+    toast(j.returncode === 0 ? "完成" : `結束，代碼 ${j.returncode}`, j.returncode !== 0);
+    loadCampaigns();
+    loadCampaignResults();
+  }
+  cpJobRunning = j.running;
+}
+
+async function loadCampaigns() {
+  const d = await api("/api/campaigns").catch((e) => { toast(e.message, true); return null; });
+  if (!d) return;
+  const st = d.status || {};
+  $("#cp-meta").textContent = st.exists
+    ? `公告 ${fmtN((st.announcements || {})["en-US"])} 則（${utc(st.from).slice(0, 10)} ～ ${utc(st.to).slice(0, 10)}）；上次檢查 ${ago(st.last_poll)}${st.backfill_done ? "" : "；歷史公告還在補"}`
+    : "還沒有公告資料，按「更新公告」";
+  table($("#cp-live"), [
+    { t: "狀態", f: (r) => CP_PHASE[r.phase] || esc(r.phase) },
+    { t: "代幣", k: "token", cls: "l" },
+    { t: "類型", f: (r) => esc(d.kinds[r.kind] || r.kind) },
+    { t: "公告", k: "p_time", f: (r) => utc(r.p_time) },
+    { t: "開始", k: "start_ts", f: (r) => utc(r.start_ts) },
+    { t: "結束", k: "end_ts", f: (r) => utc(r.end_ts) },
+    { t: "發獎勵", f: (r) => utc(r.dist_ts) },
+    { t: "獎池", f: (r) => esc(r.pool || "-") },
+    { t: "報酬", k: "ret", f: (r) => lpc(r.ret) },
+    { t: "vs 大盤", k: "vs_alts", f: (r) => lpc(r.vs_alts) },
+    { t: "vs BTC", k: "vs_btc", f: (r) => lpc(r.vs_btc) },
+    { t: "公告標題", cls: "l wrap", f: (r) => esc(r.title_zh || r.title) },
+  ], d.live || [], { sortable: true, onClick: (r) => cpKline(r.inst_id, r.p_time, r.end_ts) });
+  const all = d.campaigns || [];
+  const nOk = all.filter((r) => r.status === "ok").length;
+  const nBad = all.filter((r) => ["no_period", "no_page", "pending"].includes(r.status)).length;
+  $("#cp-all-meta").textContent = `${all.length} 則，${nOk} 則已解析${nBad ? `，${nBad} 則待處理（可用 data/campaign_overrides.json 手動補）` : ""}`;
+  table($("#cp-all"), [
+    { t: "公告", k: "p_time", f: (r) => utc(r.p_time) },
+    { t: "類型", f: (r) => esc(r.kind_label) },
+    { t: "代幣", k: "tokens", cls: "l", f: (r) => esc(r.tokens || "-") },
+    { t: "開始", k: "start_ts", f: (r) => utc(r.start_ts) },
+    { t: "結束", k: "end_ts", f: (r) => utc(r.end_ts) },
+    { t: "天數", f: (r) => (r.start_ts && r.end_ts ? num((r.end_ts - r.start_ts) / 86400e3, 1) : "-") },
+    { t: "狀態", f: (r) => CP_STATUS[r.status] || esc(r.status) },
+    { t: "標題", cls: "l wrap", f: (r) => `${esc(r.title_zh || r.title)} <a href="${esc(r.url)}" target="_blank" rel="noopener">原文</a>` },
+  ], all, { sortable: true, onClick: (r) => r.tokens && cpKline(`${r.tokens.split(",")[0]}-USDT-SWAP`, r.p_time, r.end_ts) });
+}
+
+function cpCurve(c, title) {
+  const W = 480, Hh = 210, L = 44, R = 10, T = 22, B = 26;
+  if (!c || !c.h || c.h.length < 2) return `<div class="muted">${esc(title)}：樣本不足</div>`;
+  const ys = [...c.lo, ...c.hi, 0].filter((v) => v != null).map((v) => Math.expm1(v) * 100);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const pad = (y1 - y0) * 0.08 || 1;
+  y0 -= pad; y1 += pad;
+  const x0 = c.h[0], x1 = c.h[c.h.length - 1];
+  const X = (h) => L + ((h - x0) / (x1 - x0)) * (W - L - R);
+  const Y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (Hh - T - B);
+  const pts = (arr) => arr.map((v, i) => (v == null ? null : `${X(c.h[i]).toFixed(1)},${Y(Math.expm1(v) * 100).toFixed(1)}`)).filter(Boolean);
+  const band = [...pts(c.hi), ...pts(c.lo).reverse()].join(" ");
+  const step = Math.max(1, Math.round((y1 - y0) / 5));
+  let grid = "";
+  for (let v = Math.ceil(y0 / step) * step; v <= y1; v += step) {
+    grid += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--border)" stroke-width="${v === 0 ? 1.4 : 0.6}"/>`
+      + `<text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${v}%</text>`;
+  }
+  let xt = "";
+  for (let dd = Math.ceil(x0 / 24); dd <= x1 / 24; dd++) {
+    xt += `<text x="${X(dd * 24)}" y="${Hh - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${dd}</text>`;
+  }
+  return `<div><svg viewBox="0 0 ${W} ${Hh}" width="100%" role="img" aria-label="${esc(title)}">
+    <text x="${L}" y="14" font-size="12" fill="var(--text)">${esc(title)}（最多 ${Math.max(...c.n)} 筆）</text>
+    ${grid}${xt}
+    <line x1="${X(0)}" x2="${X(0)}" y1="${T}" y2="${Hh - B}" stroke="var(--muted)" stroke-dasharray="3 3"/>
+    <polygon points="${band}" fill="var(--accent)" opacity="0.18"/>
+    <polyline points="${pts(c.mean).join(" ")}" fill="none" stroke="var(--accent)" stroke-width="1.8"/>
+  </svg></div>`;
+}
+
+async function loadCampaignResults() {
+  const r = await api("/api/campaigns/results").catch(() => null);
+  if (!r) {
+    $("#cp-res-meta").textContent = "尚未執行研究，按「重跑研究」";
+    ["#cp-main", "#cp-curves", "#cp-vol", "#cp-ols", "#cp-caveats"].forEach((x) => { $(x).innerHTML = ""; });
+    return;
+  }
+  $("#cp-res-meta").textContent = `產生於 ${r.generated_at}，資料到 ${r.data_to}；${r.n_events} 筆（${r.n_campaigns} 檔活動）`;
+  $("#cp-main").innerHTML = Object.entries(r.main).map(([g, m]) => {
+    const s = m.stats || {}, p = m.placebo || {};
+    return `<div class="card"><div class="k">${esc(r.groups[g])}・${esc(r.windows[m.window])}（vs 同齡幣）</div>
+      <div class="v">${lpc(s.mean)} <span class="badge ${CP_VERD[m.verdict] || ""}">${esc(m.verdict)}</span></div>
+      <div class="s">${s.n || 0} 筆，${pct(s.neg, 0)} 為負；隨機日期平均 ${lp(p.placebo_mean)}，p=${p.p == null ? "-" : p.p.toFixed(3)}</div></div>`;
+  }).join("");
+  const rows = [];
+  for (const g of ["earn", "trade"]) {
+    for (const w of ["anno", "dur", "post3", "post7"]) {
+      const S = r.summary[g][w];
+      rows.push({ g, w, ab: S.ab || {}, raw: S.raw || {}, btc: S.ab_btc || {}, alt: S.ab_alt || {}, pl: r.placebo[`${g}_${w}`] });
+    }
+  }
+  const sc = (s) => (s && s.n ? `${lpc(s.mean)} <span class="muted">中位 ${lp(s.median)}</span>` : "-");
+  table($("#cp-sum"), [
+    { t: "活動", cls: "l", f: (x) => esc(r.groups[x.g]) },
+    { t: "時段", f: (x) => esc(r.windows[x.w]) + (r.main[x.g].window === x.w ? ' <span class="badge">主要</span>' : "") },
+    { t: "筆數", f: (x) => x.ab.n || 0 },
+    { t: "vs 同齡幣", f: (x) => sc(x.ab) },
+    { t: "為負", f: (x) => pct(x.ab.neg, 0) },
+    { t: "t", f: (x) => num(x.ab.t) },
+    { t: "隨機日期 p", f: (x) => (x.pl && x.pl.p != null ? (x.pl.p < 0.05 ? `<b>${x.pl.p.toFixed(3)}</b>` : x.pl.p.toFixed(3)) : "-") },
+    { t: "原始報酬", f: (x) => sc(x.raw) },
+    { t: "vs BTC", f: (x) => sc(x.btc) },
+    { t: "vs 大盤", f: (x) => sc(x.alt) },
+  ], rows);
+  const vs = (s) => (s && s.n ? `${lpc(s.mean)}（${s.n} 筆，t=${num(s.t)}）` : "-");
+  $("#cp-vol").innerHTML = "活動期間 vs 公告前 7 天，扣同齡幣：" + ["earn", "trade"].map((g) =>
+    `${esc(r.groups[g])} 波動度 ${vs(r.summary[g].vol_ratio_ab)}、成交額 ${vs(r.summary[g].v_ratio_ab)}`).join("；");
+  $("#cp-curves").innerHTML = [["earn_start", "閃賺／空投賺幣・從活動開始（天）"], ["earn_end", "閃賺／空投賺幣・從活動結束（天）"],
+    ["trade_start", "交易賺幣・從活動開始（天）"], ["trade_end", "交易賺幣・從活動結束（天）"]].map(([k, t]) => cpCurve(r.curves[k], t)).join("");
+  const reg = [];
+  for (const g of ["earn", "trade"]) for (const x of (r.regimes[g] || {}).splits || []) reg.push({ g, ...x });
+  const rs = (s) => (s && s.n ? `${lpc(s.mean)} <span class="muted">${s.n} 筆</span>` : "-");
+  table($("#cp-reg"), [
+    { t: "活動", cls: "l", f: (x) => esc(r.groups[x.g]) },
+    { t: "分組", f: (x) => esc(x.label) },
+    { t: "上漲時", f: (x) => rs(x.up_raw) },
+    { t: "下跌時", f: (x) => rs(x.down_raw) },
+    { t: "差異 p", f: (x) => (x.p_raw == null ? "-" : x.p_raw.toFixed(2)) },
+    { t: "上漲時（扣同齡）", f: (x) => rs(x.up_ab) },
+    { t: "下跌時（扣同齡）", f: (x) => rs(x.down_ab) },
+    { t: "差異 p", f: (x) => (x.p_ab == null ? "-" : x.p_ab.toFixed(2)) },
+  ], reg);
+  const XL = { btc_win: "BTC 同期", alt_win: "大盤同期", btc_pre: "BTC 前 7 天" };
+  $("#cp-ols").innerHTML = "迴歸（大盤持平時的預期報酬 alpha）：" + ["earn", "trade"].map((g) => `${esc(r.groups[g])}：` +
+    ((r.regimes[g] || {}).ols || []).filter((o) => o.y === "raw").map((o) => `對${XL[o.x] || o.x} alpha ${lpc(o.alpha)}（t=${num(o.t_alpha)}）、β ${num(o.beta)}`).join("，")).join("；");
+  table($("#cp-events"), [
+    { t: "代幣", k: "token", cls: "l" },
+    { t: "類型", f: (e) => CP_GRP[e.grp] || esc(e.kind) },
+    { t: "開始", k: "start_ts", f: (e) => utc(e.start_ts) },
+    { t: "天數", k: "days", f: (e) => num(e.days, 1) },
+    { t: "上市天數", k: "age_d", f: (e) => num(e.age_d, 0) },
+    { t: "公告到開始", k: "anno_ab", f: (e) => lpc(e.anno_ab) },
+    { t: "活動期間", k: "dur_ab", f: (e) => lpc(e.dur_ab) },
+    { t: "結束後 3 天", k: "post3_ab", f: (e) => lpc(e.post3_ab) },
+    { t: "結束後 7 天", k: "post7_ab", f: (e) => lpc(e.post7_ab) },
+    { t: "BTC 同期", k: "btc_win", f: (e) => lpc(e.btc_win) },
+  ], (r.events || []).slice().sort((a, b) => b.start_ts - a.start_ts), { sortable: true, onClick: (e) => cpKline(e.inst_id, e.p_time, e.end_ts) });
+  $("#cp-caveats").innerHTML = (r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("");
+}
 
 /* ---------------- shell: jobs indicator, sub-nav, lab steps ---------------- */
 const GLOBAL_JOBS = [
@@ -2377,6 +2563,7 @@ const GLOBAL_JOBS = [
   { url: "/api/paper/jobs", label: "AI 模擬", tab: "pp", multi: true },
   { url: "/api/heat/job", label: "過熱驗證", tab: "ht" },
   { url: "/api/lab/job", label: "實驗室", tab: "lab" },
+  { url: "/api/campaigns/job", label: "瓜分活動", tab: "cp" },
 ];
 async function pollGlobalJobs() {
   const res = await Promise.all(GLOBAL_JOBS.map((g) => api(g.url).catch(() => null)));

@@ -606,7 +606,7 @@ def traders(cfg: Config, kinds: dict[str, bool]) -> list[CampaignTrader]:
 def live_alerts(cfg: Config, con: Any, now: int) -> int:
     """Alerts (heat_alerts) for campaigns announced in the last day and Trade-to-Earn campaigns that just ended,
     with what the research found for that kind."""
-    if not ((cfg.paper or {}).get("campaign") or {}).get("alerts", True):
+    if not ((cfg.paper or {}).get("campaign") or {}).get("alerts", True) or not announce.acfg(cfg).get("enabled", True):
         return 0
     from okxrev import heat
     con.execute(heat.ALERT_SCHEMA)

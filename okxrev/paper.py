@@ -653,6 +653,12 @@ def run_tick(cfg: Config, which: Iterable[str] | None = None, traders_: list[Tra
                 res["fade_alerts"] = fade.live_alerts(cfg, con, now)
             except Exception:
                 log.exception("fade alerts failed")
+        if traders_ is None:
+            try:
+                from okxrev import campaigns
+                res["campaign_alerts"] = campaigns.live_alerts(cfg, con, now)
+            except Exception:
+                log.exception("campaign alerts failed")
         if cfg.raw.get("heat") is not None and traders_ is None:
             t1 = time.monotonic()
             try:
