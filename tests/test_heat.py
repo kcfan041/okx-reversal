@@ -317,3 +317,36 @@ def test_backfill_splits_and_resumes(tmp_path, monkeypatch):
     assert heatdata.backfill(cfg)["complete"] and len(fake.calls) == n
     st = heatdata.backfill_status(cfg)
     assert st["fill:taker"]["done"] == 1 and st["fill:mark"]["done"] == 1
+
+
+class ZeroPadClient(FakeHeatClient):
+    """OKX keeps ~60 days of taker volume and pads older hours with zeros."""
+    def __init__(self, oldest, newest, real_from):
+        super().__init__(oldest, newest)
+        self.real_from = real_from
+
+    def get(self, path, p):
+        rows = super().get(path, p)
+        if path == heatdata.TAKER_PATH:
+            return [r if int(r[0]) >= self.real_from else [r[0], "0", "0"] for r in rows]
+        return rows
+
+
+def test_taker_backfill_stops_at_zero_padding(tmp_path, monkeypatch):
+    from okxrev import db
+    from okxrev.config import Paths, parse_utc_ms
+    cfg = load_config().copy_with({"heat": {"backfill_start": "2024-09-01"},
+                                   "replay": {"db": str(tmp_path / "old.duckdb"), "end": "2024-09-05"}})
+    cfg.paths = Paths(root=tmp_path, db=tmp_path / "okx.duckdb", logs=tmp_path / "l", results=tmp_path / "r", lock=tmp_path / "k")
+    with db.open_db(cfg.paths.db) as con:
+        db.upsert_instruments(con, [{"inst_id": "AAA-USDT-SWAP"}])
+        db.write_batch(con, "AAA-USDT-SWAP", pd.DataFrame({"ts": [parse_utc_ms("2024-10-20")], "open": 1.0, "high": 1.0, "low": 1.0,
+                                                          "close": 1.0, "vol": 1.0, "vol_ccy": 1.0, "vol_quote": 1.0}))
+    real_from = parse_utc_ms("2024-10-10")
+    fake = ZeroPadClient(parse_utc_ms("2024-09-01"), parse_utc_ms("2024-10-15"), real_from)
+    monkeypatch.setattr(heatdata, "OkxClient", lambda *a, **k: fake)
+    assert heatdata.backfill(cfg)["complete"]
+    with db.open_db(cfg.paths.db, read_only=True) as con:
+        lo, n_zero = con.execute("SELECT MIN(ts), COUNT(*) FILTER (WHERE buy + sell = 0) FROM taker_volume").fetchone()
+    assert lo == real_from and n_zero == 0
+    assert sum(path == heatdata.TAKER_PATH for path, _ in fake.calls) <= 3      # 5 days of real hours, then one zero page

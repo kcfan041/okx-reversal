@@ -1,6 +1,7 @@
 """Extra market data for the overheat score.
 
-taker_volume   hourly taker buy/sell volume (rubik), history to at least 2024-10
+taker_volume   hourly taker buy/sell volume (rubik); OKX keeps only the latest ~60 days (older hours come back as
+               zeros), so history starts 2026-08-14 and is accumulated forward
 mark_index     hourly mark-price and index-price closes -> perpetual premium, history to at least 2024-10
 ls_ratio       5-minute account long/short ratio and top-trader ratio (OKX keeps ~1 day; accumulated forward)
 liquidations   filled liquidation orders (only the latest ~100 per family; accumulated forward, de-duplicated)
@@ -78,10 +79,13 @@ def index_id(inst: str) -> str:
 
 # ---------------------------------------------------------------- fetchers (newest-first pages)
 def fetch_taker(client: OkxClient, inst: str, end: int | None = None) -> list[tuple]:
+    """Hours with no taker volume are dropped: OKX keeps only the latest ~1440 hours and pads anything older with
+    zero rows, so an all-zero page comes back empty and ends the backfill instead of paging zeros back to 2024."""
     p: dict[str, Any] = {"instId": inst, "period": "1H", "limit": "100"}
     if end is not None:
         p["end"] = str(end)
-    return [(inst, int(r[0]), _f(r[1]), _f(r[2])) for r in client.get(TAKER_PATH, p)]
+    rows = [(inst, int(r[0]), _f(r[1]), _f(r[2])) for r in client.get(TAKER_PATH, p)]
+    return [r for r in rows if (r[2] or 0) + (r[3] or 0) > 0]
 
 
 def fetch_mark_index(client: OkxClient, inst: str, after: int | None = None) -> list[tuple]:
