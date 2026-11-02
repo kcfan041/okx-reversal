@@ -162,6 +162,21 @@ uv run python -m okxrev.events_lab --similar CT-USDT-SWAP@2026-10-13T02:50      
 - 1 秒 K 只有約 7 個月（新幣從上市起），只用來細看，不用來建規則；1 分 K 約 2 年。
 - 已下架的幣沒有資料，有存活者偏差。設定在 `config.yaml` 的 `lab:`。
 
+## OKX 公告與瓜分活動
+
+每次同步（最多每 30 分鐘一次，`announce.poll_min`）抓 OKX 公告各類型的第一頁（英文用來解析、繁中用來顯示），存在 `data/announce.duckdb`。
+「最新活動」裡標題有 share（瓜分）的公告視為瓜分活動：從標題取出活動代幣與類型，從公告內文取出活動期間、預約開始、獎勵發放時間。
+
+```powershell
+uv run python -m okxrev.announce --backfill --campaigns   # 補完全部歷史公告（約 250 個請求）並列出活動
+uv run python -m okxrev.announce --reparse                # 修正解析或覆寫後重新解析
+```
+
+- 活動類型：閃賺／閃賺 Lite／空投賺幣（活動期間每小時發獎勵）、交易賺幣（現貨／合約，活動結束後才發）。
+- 只獎勵 BTC/ETH/USDT 等主流幣、沒有指定代幣的活動標為 `no_token`，不納入分析。
+- 解析失敗的活動會列在狀態裡，可用 `data/campaign_overrides.json` 手動補：`{"<公告網址>": {"tokens": ["AI"], "start": "2026-05-22T10:00", "end": "2026-06-01T10:00"}}`，或 `{"skip": true}` 排除。
+- 公告 API 的「最新活動」只到 2025-09，之前的瓜分活動查不到。
+
 ## 設定面板
 
 網頁右上角 ⚙（或各分頁標題旁的小 ⚙）打開右側設定面板，不用切換頁面：資料收集範圍與頻率、關注清單與提醒、紙上交易員類別與帳本、AI 預設模型與上限、背景程式優先權，以及金鑰／LLM 是否已設定（只顯示有沒有）。
@@ -213,6 +228,7 @@ okxrev/
   fine.py        1s/1m K 線與逐筆成交（即時抓取、1m 快取）、微結構指標
   events_lab.py  事件實驗室：形狀、樣板、全市場索引、相似事件、分期與盲測
   custom_rules.py 實驗室規則存檔、紙上交易員、1m 確認提醒
+  announce.py    OKX 公告同步、瓜分活動解析
   web/           網頁監控台（FastAPI + 單頁 HTML，lightweight-charts）
 scripts/         Windows 排程安裝／移除
 tests/           pytest（含防偷看未來資料測試）

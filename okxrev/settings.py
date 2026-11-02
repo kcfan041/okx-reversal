@@ -17,6 +17,8 @@ _lock = threading.Lock()
 FIELDS: list[dict[str, Any]] = [
     {"group": "collect", "path": "sync.oi5m_scope", "type": "choice", "options": {"focus": "只抓關注清單＋過熱前 N 名", "all": "全部合約"},
      "label": "每 5 分鐘 OI 範圍", "help": "停抓的部分之後補不回來（OKX 只保留幾小時）", "when": "下一輪同步"},
+    {"group": "collect", "path": "announce.enabled", "type": "bool", "label": "同步 OKX 公告與瓜分活動", "when": "下一輪同步"},
+    {"group": "collect", "path": "announce.poll_min", "type": "int", "min": 10, "max": 1440, "label": "公告每幾分鐘檢查一次", "when": "下一輪同步"},
     {"group": "collect", "path": "heat.sentiment_all", "type": "bool", "label": "多空比與爆倉也抓其他幣",
      "help": "關閉後只抓關注清單＋過熱前 N 名", "when": "下一輪同步"},
     {"group": "collect", "path": "heat.liq_all_every_min", "type": "int", "min": 10, "max": 1440, "label": "其他幣爆倉每幾分鐘抓一次",
@@ -116,7 +118,7 @@ def apply(raw: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
 
 
 DEFAULTS: dict[str, Any] = {
-    "sync.oi5m_scope": "focus", "heat.sentiment_all": True, "heat.liq_all_every_min": 60, "heat.ls_all_every_min": 360,
+    "sync.oi5m_scope": "focus", "announce.enabled": True, "announce.poll_min": 30, "heat.sentiment_all": True, "heat.liq_all_every_min": 60, "heat.ls_all_every_min": 360,
     "sync.derivs_max_sec": 60, "heat.watchlist": [], "heat.top_n": 10, "heat.alert_threshold": 80, "heat.alert_cooldown_h": 6,
     "paper.kinds.rule": True, "paper.kinds.rule_sl20": True, "paper.kinds.follow_long": True, "paper.kinds.follow_short": True, "paper.kinds.inverse": True, "paper.kinds.fade": True, "paper.fade.alerts": True, "paper.fade.risk": 0.02, "paper.fade.equity_fallback": 1000.0,
     "paper.kinds.heat": True, "paper.kinds.lab": True, "paper.kinds.ml": True, "paper.kinds.twin": True,

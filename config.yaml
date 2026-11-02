@@ -110,6 +110,12 @@ heat:
   paper_thresholds: [80, 90]
   paper_exits: [24h, 24h_sl10pct, 24h_sl20pct]
 
+announce:
+  enabled: true
+  db: data/announce.duckdb
+  poll_min: 30
+  max_sec: 30
+
 chat:
   model: claude
   max_rounds: 12

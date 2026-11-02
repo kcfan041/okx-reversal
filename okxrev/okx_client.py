@@ -248,7 +248,7 @@ class OkxClient:
     def get_private(self, path: str, params: dict[str, Any]) -> list[Any]:
         return self.get(path, params, private=True)
 
-    def get(self, path: str, params: dict[str, Any], private: bool = False) -> list[Any]:
+    def get(self, path: str, params: dict[str, Any], private: bool = False, headers: dict[str, str] | None = None) -> list[Any]:
         last_err: str = ""
         limiter = self.limiter_for(path)
         for attempt in range(self.max_retries + 1):
@@ -262,7 +262,7 @@ class OkxClient:
                     resp = self.session.get(self.base_url + path, params=params, timeout=self.timeout,
                                             headers=self._auth_headers(path, params))
                 else:
-                    resp = self.session.get(self.base_url + path, params=params, timeout=self.timeout)
+                    resp = self.session.get(self.base_url + path, params=params, timeout=self.timeout, **({"headers": headers} if headers else {}))
             except requests.RequestException as e:
                 last_err = f"{type(e).__name__}: {e}"
                 retry = True

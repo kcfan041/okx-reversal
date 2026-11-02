@@ -341,6 +341,13 @@ def run_sync(cfg: Config, budget_sec: float, only: list[str] | None, smoke: bool
                 focus = focus_insts(cfg)
                 sync_derivs(cfg, syncer.client, deadline - 5, max_sec=float(cfg.sync.get("derivs_max_sec", 60)), focus=focus)
                 sync_heat(cfg, syncer.client, deadline - 5, max_sec=float(cfg.sync.get("heat_max_sec", 60)), focus=focus)
+                try:
+                    from okxrev.announce import sync_announce
+                    sync_announce(cfg, syncer.client, deadline - 5)
+                except BudgetExceeded:
+                    raise
+                except Exception:
+                    log.exception("announcement sync failed")
         except BudgetExceeded:
             note = "budget"
             log.info("time budget reached")
