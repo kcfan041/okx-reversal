@@ -454,7 +454,7 @@ class Engine:
                 "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, 0, 0, 0, 0) ON CONFLICT DO NOTHING",
                 [pid, s.decision_id, s.trader_id, b.name, s.inst_id, s.side, s.bar_ts, notional, b.lever if not b.unit else 1.0, hold])
             self.con.execute("UPDATE positions SET stop_px = ?, tp_px = ? WHERE pos_id = ?",
-                             [s.features.get("_stop_frac"), FIXED_TP.get(s.exit_rule), pid])
+                             [s.features.get("_stop_frac"), s.features.get("_tp_frac") or FIXED_TP.get(s.exit_rule), pid])
             n += 1
         return n
 

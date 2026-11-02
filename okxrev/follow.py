@@ -48,7 +48,7 @@ def family(trader_id: str) -> str:
     """Traders that differ only in stop/exit variant share one entry signal: rule04_3d / rule04_3d_sl20,
     heat80_24h / heat80_24h_sl10pct / heat80_24h_sl20pct, twin / twin_you."""
     import re
-    t = re.sub(r"_sl\d+(pct)?$", "", trader_id)
+    t = re.sub(r"_(sl\d+(pct)?|hx)$", "", trader_id)
     t = re.sub(r"_(15m|1h|6h|24h|3d|6h_sl2atr|24h_sl2atr)$", "", t) if t.startswith("heat") else t
     return "twin" if t.startswith("twin") else t
 

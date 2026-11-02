@@ -131,3 +131,12 @@ def test_campaign_endpoints_without_data(client):
     assert c.post("/api/campaigns/evaluate").status_code == 403
     d = c.get("/api/candles", params={"inst": "AAA-USDT-SWAP"}).json()
     assert "campaigns" not in d or d["campaigns"] == []
+
+
+def test_research_endpoints_without_results(client):
+    c, _ = client
+    for name in ("regime", "xsec", "flow", "listings", "exit_lab", "margin"):
+        r = c.get(f"/api/research/{name}")
+        assert r.status_code == 200 and r.json()["result"] is None
+    assert c.get("/api/research/nope").status_code == 404
+    assert c.get("/api/research/job").json()["running"] is False

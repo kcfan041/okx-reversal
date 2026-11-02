@@ -23,6 +23,7 @@
       <button data-tab="dc">進場探索</button>
       <button data-tab="lab">事件實驗室</button>
       <button data-tab="cp">瓜分活動</button>
+      <button data-tab="rs">更多研究</button>
     </div>
     <div class="nav-group">
       <div class="nav-label">交易</div>
@@ -241,6 +242,58 @@
   <div class="panel">
     <h2>全部瓜分活動公告 <small id="cp-all-meta" class="muted"></small></h2>
     <div class="scroll tall"><table id="cp-all" class="clickable"></table></div>
+  </div>
+</section>
+
+<section id="tab-rs" class="tab">
+  <div class="panel">
+    <div class="row"><span class="muted">各項研究的結果；按各段的「重跑」在背景重新計算（約 10 秒～幾分鐘）。報酬除了另外註明的都換算成百分比。</span></div>
+    <pre id="rs-log" class="log short" style="display:none"></pre>
+  </div>
+  <div class="panel" id="rs-regime">
+    <h2>大盤連漲連跌 <small id="rs-regime-meta" class="muted"></small> <button class="small" data-rs-run="regime">重跑</button></h2>
+    <div id="rs-regime-now"></div>
+    <h3>連跌／連漲之後 <small class="muted">（每段連跌只算第一次達到天數的那天，不重疊）</small></h3>
+    <div class="scroll"><table id="rs-regime-ev"></table></div>
+    <div id="rs-regime-runs" class="muted"></div>
+    <h3>探索規則依大盤狀態分組 <small class="muted">（每筆淨報酬，探索期事件）</small></h3>
+    <div class="scroll"><table id="rs-regime-rules"></table></div>
+    <ul id="rs-regime-cav" class="muted"></ul>
+  </div>
+  <div class="panel" id="rs-xsec">
+    <h2>橫斷面動能／反轉 <small id="rs-xsec-meta" class="muted"></small> <button class="small" data-rs-run="xsec">重跑</button></h2>
+    <div id="rs-xsec-seg" class="muted"></div>
+    <div class="scroll"><table id="rs-xsec-t"></table></div>
+    <ul id="rs-xsec-cav" class="muted"></ul>
+  </div>
+  <div class="panel" id="rs-flow">
+    <h2>主動買賣與合約溢價背離 <small id="rs-flow-meta" class="muted"></small> <button class="small" data-rs-run="flow">重跑</button></h2>
+    <div class="row"><span id="rs-flow-seg" class="muted"></span><label><input type="checkbox" id="rs-flow-all"> 顯示全部（含無效、資料不足）</label></div>
+    <div class="scroll tall"><table id="rs-flow-t"></table></div>
+    <ul id="rs-flow-cav" class="muted"></ul>
+  </div>
+  <div class="panel" id="rs-listings">
+    <h2>上幣／下架公告 <small id="rs-listings-meta" class="muted"></small> <button class="small" data-rs-run="listings">重跑</button></h2>
+    <div id="rs-listings-n" class="muted"></div>
+    <h3>已經有合約的幣 <small class="muted">（以公告時間為準）</small></h3>
+    <div class="scroll"><table id="rs-listings-t"></table></div>
+    <h3>新上市合約的頭幾天</h3>
+    <div class="scroll"><table id="rs-listings-new"></table></div>
+    <ul id="rs-listings-cav" class="muted"></ul>
+  </div>
+  <div class="panel" id="rs-exit_lab">
+    <h2>人性化出場 vs 時間出場 <small id="rs-exit_lab-meta" class="muted"></small> <button class="small" data-rs-run="exit_lab">重跑</button></h2>
+    <div class="scroll"><table id="rs-exit_lab-t"></table></div>
+    <div id="rs-exit_lab-imp"></div>
+    <ul id="rs-exit_lab-cav" class="muted"></ul>
+  </div>
+  <div class="panel" id="rs-margin">
+    <h2>全倉／逐倉與安全槓桿 <small id="rs-margin-meta" class="muted"></small> <button class="small" data-rs-run="margin">重跑</button></h2>
+    <div class="row"><select id="rs-margin-src"><option value="live">即時紙上交易</option><option value="blind">2024-25 盲測</option></select>
+      <select id="rs-margin-lev"><option>1</option><option>3</option><option selected>5</option><option>10</option><option>20</option></select><span>倍</span>
+      <span id="rs-margin-meta2" class="muted"></span></div>
+    <div class="scroll tall"><table id="rs-margin-t"></table></div>
+    <ul id="rs-margin-cav" class="muted"></ul>
   </div>
 </section>
 

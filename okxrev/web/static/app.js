@@ -98,6 +98,7 @@ function showTab(t) {
   if (t === "ai") { loadInsts(); aiInit(); }
   if (t === "lab") { loadInsts(); labInit(); }
   if (t === "cp") { loadCampaigns(); loadCampaignResults(); pollCampJob(); }
+  if (t === "rs") { loadResearch(); pollResearchJob(); }
   if (t === "kl") {
     loadInsts();
     resizeCharts();
@@ -1101,7 +1102,7 @@ async function loadScan(refresh) {
 }
 
 /* ---------------- paper trading ---------------- */
-const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單", inverse: "反指標", fade: "急漲回落", campaign: "瓜分活動" };
+const KIND = { rule: "規則", random: "隨機對照", ml: "機器學習", llm: "LLM 審核", heat: "過熱分數", lab: "實驗室規則", follow: "跟單", inverse: "反指標", fade: "急漲回落", campaign: "瓜分活動", regime: "大盤連跌" };
 const EXIT_WHY = { time: "到期", stop: "止損", liquidation: "強平", stale: "資料中斷", "data gap": "資料缺口" };
 let ppChart = null, ppSeries = {}, ppFilter = null, ppJobsRunning = {}, ppOpenRow = null, ppLastBoard = null, ppLastStatus = null;
 const PP_KEY = "okxrev.pp";
@@ -2379,6 +2380,7 @@ setInterval(() => {
   if (currentTab === "ht") pollHeatJob();
   if (currentTab === "lab") labPollJob();
   if (currentTab === "cp") pollCampJob();
+  if (currentTab === "rs") pollResearchJob();
 }, 3000);
 
 /* ---------------- campaigns (瓜分活動) ---------------- */
@@ -2555,6 +2557,146 @@ async function loadCampaignResults() {
   $("#cp-caveats").innerHTML = (r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("");
 }
 
+/* ---------------- more research (更多研究) ---------------- */
+const RS_NAMES = { regime: "大盤連漲連跌", xsec: "橫斷面動能／反轉", flow: "主動買賣與溢價背離", listings: "上幣／下架公告", exit_lab: "人性化出場", margin: "全倉／逐倉與安全槓桿" };
+const RS_VERD = { "可用": "ok", "觀察中": "warn", "無效": "bad", "資料不足": "dim" };
+let rsJobRunning = false;
+const rsPct = (v, d = 2) => (v == null ? "-" : pctC(Math.expm1(v), d));
+const rsRaw = (v, d = 2) => (v == null ? "-" : pctC(v, d));
+const rsP = (p) => (p == null ? "-" : p < 0.05 ? `<b>${p.toFixed(3)}</b>` : p.toFixed(3));
+
+document.querySelectorAll("[data-rs-run]").forEach((b) => b.addEventListener("click", async () => {
+  try { const r = await post(`/api/research/${b.dataset.rsRun}/run`); toast(r.message, !r.ok); } catch (e) { toast(e.message, true); }
+  pollResearchJob();
+}));
+
+async function pollResearchJob() {
+  const j = await api("/api/research/job").catch(() => null);
+  if (!j) return;
+  if (j.running || j.log.length) { $("#rs-log").style.display = ""; renderLog($("#rs-log"), j.log); }
+  document.querySelectorAll("[data-rs-run]").forEach((b) => { b.disabled = j.running; });
+  if (rsJobRunning && !j.running) { toast(j.returncode === 0 ? "研究完成" : `研究結束，代碼 ${j.returncode}`, j.returncode !== 0); loadResearch(); }
+  rsJobRunning = j.running;
+}
+
+async function loadResearch() {
+  for (const name of Object.keys(RS_NAMES)) {
+    const d = await api(`/api/research/${name}`).catch(() => null);
+    const meta = $(`#rs-${name}-meta`);
+    const r = d && d.result;
+    if (!r) { meta.textContent = "尚未執行，按「重跑」"; continue; }
+    meta.textContent = `產生於 ${r.generated_at}（${r.elapsed_sec ?? "-"} 秒）`;
+    const cav = (r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("");
+    $(`#rs-${name}-cav`).innerHTML = cav;
+    ({ regime: rsRegime, xsec: rsXsec, flow: rsFlow, listings: rsListings, exit_lab: rsExits, margin: rsMargin })[name](r, d);
+  }
+}
+
+function rsRegime(r, d) {
+  const c = d.current || {};
+  $("#rs-regime-now").innerHTML = c.day ? `目前（到 ${esc(c.day)}）：大盤連跌 <b>${c.down_days}</b> 天、連漲 <b>${c.up_days}</b> 天；最近 10 天：` +
+    (c.recent || []).map((x) => `${esc(x.day.slice(5))} ${rsPct(x.ret, 1)}`).join("、") : "";
+  const PN = { old: "2024-25（舊資料）", main: "2025-10 之後", btc: "BTC 2020 之後", btc_recent: "BTC 2024-10 之後" };
+  const rows = [];
+  for (const [k, p] of Object.entries(r.periods)) {
+    for (const key of ["dn2_h3", "dn3_h1", "dn3_h3", "dn4_h1", "dn4_h3", "dn4_h5", "dn5_h3", "up3_h3", "up4_h3"]) {
+      const e = (p.events || {})[key];
+      if (e && e.n) rows.push({ period: PN[k] || k, key, ...e, basket: (p.basket || {})[`${key}_n20`] });
+    }
+  }
+  const lab = (k) => `${k.startsWith("dn") ? "連跌" : "連漲"} ${k[2]} 天後 ${k.split("_h")[1]} 天`;
+  table($("#rs-regime-ev"), [
+    { t: "期間", cls: "l", k: "period" }, { t: "情況", f: (x) => lab(x.key) }, { t: "次數", k: "n" },
+    { t: "之後大盤", f: (x) => rsPct(x.mean) }, { t: "平常", f: (x) => rsPct(x.all_days) }, { t: "上漲比例", f: (x) => pct(x.pos, 0) },
+    { t: "打亂順序 p", f: (x) => rsP(x.p) },
+    { t: "前 20 名一籃子（扣成本）", f: (x) => (x.basket && x.basket.n ? `${rsRaw(x.basket.mean)} <span class="muted">平常 ${pct(x.basket.all_days, 2)}，t=${num(x.basket.t_vs_all)}</span>` : "-") },
+  ], rows);
+  const runs = Object.entries(r.periods).filter(([, p]) => p.runs).map(([k, p]) => {
+    const u = p.runs;
+    return `${esc(PN[k] || k)}：連漲平均 ${num(u.up_mean)} 天（隨機 ${num(u.up_mean_random)}）、連跌平均 ${num(u.down_mean)} 天（隨機 ${num(u.down_mean_random)}），最長 ${u.up_max}／${u.down_max} 天`;
+  });
+  $("#rs-regime-runs").innerHTML = runs.join("<br>");
+  table($("#rs-regime-rules"), [
+    { t: "規則", cls: "l wrap", k: "label" }, { t: "出場", k: "exit" }, { t: "全部", f: (x) => `${rsRaw(x.all)} <span class="muted">${x.n}</span>` },
+    { t: "大盤連跌 ≥3 天", f: (x) => (x.dn3.n ? `${rsRaw(x.dn3.mean)} <span class="muted">${x.dn3.n}</span>` : "-") },
+    { t: "大盤連漲 ≥3 天", f: (x) => (x.up3.n ? `${rsRaw(x.up3.mean)} <span class="muted">${x.up3.n}</span>` : "-") },
+    { t: "其他", f: (x) => (x.other.n ? `${rsRaw(x.other.mean)} <span class="muted">${x.other.n}</span>` : "-") },
+  ], r.rules || []);
+}
+
+function rsXsec(r) {
+  $("#rs-xsec-seg").textContent = `找參數期 ${r.segments.train.join(" ～ ")}、驗證期 ${r.segments.valid.join(" ～ ")}、盲測期 ${(r.segments.blind || []).join(" ～ ")}；每次換倉成本 ${pct(r.cost_round_trip * 2, 2)}（兩邊）`;
+  const cell = (c, s) => { const x = c[s] || {}; return x[c.key] == null ? "-" : `${rsRaw(x[c.key])} <span class="muted">t=${num(x[`${c.key}_t`], 1)}</span>`; };
+  table($("#rs-xsec-t"), [
+    { t: "判定", f: (c) => `<span class="badge ${RS_VERD[c.verdict] || ""}">${esc(c.verdict)}</span>` },
+    { t: "看過去", f: (c) => `${c.lookback_d} 天` }, { t: "持有", f: (c) => `${c.hold_d} 天` },
+    { t: "方向", f: (c) => (c.side === "momentum" ? "動能（買強賣弱）" : "反轉（買弱賣強）") },
+    { t: "找參數期", f: (c) => cell(c, "train") }, { t: "驗證期", f: (c) => cell(c, "valid") }, { t: "盲測期", f: (c) => cell(c, "blind") },
+    { t: "未扣成本（動能）", f: (c) => ["train", "valid", "blind"].map((s) => rsRaw((c[s] || {}).spread_gross)).join(" / ") },
+  ], r.combos);
+}
+
+function rsFlow(r) {
+  $("#rs-flow-seg").textContent = `找參數期 ${r.segments.train.join(" ～ ")}、驗證期 ${r.segments.valid.join(" ～ ")}、盲測期 ${(r.segments.blind || []).join(" ～ ")}`;
+  const show = $("#rs-flow-all").checked ? r.events : r.events.filter((e) => e.verdict !== "資料不足" && e.verdict !== "無效");
+  const cell = (e, s) => { const x = e[s] || {}; return x.mean == null ? "-" : `${rsRaw(x.mean)} <span class="muted">對照 ${pct(x.ctrl_mean, 2)}・${x.n} 筆・t=${num(x.t_vs_ctrl, 1)}</span>`; };
+  table($("#rs-flow-t"), [
+    { t: "判定", f: (e) => `<span class="badge ${RS_VERD[e.verdict] || ""}">${esc(e.verdict)}</span>` },
+    { t: "條件", cls: "l wrap", k: "label" }, { t: "持有", f: (e) => `${e.hold_h}h` }, { t: "對照", cls: "l", k: "ctrl_label" },
+    { t: "找參數期", f: (e) => cell(e, "train") }, { t: "驗證期", f: (e) => cell(e, "valid") }, { t: "盲測期", f: (e) => cell(e, "blind") },
+  ], show);
+}
+$("#rs-flow-all").addEventListener("change", () => api("/api/research/flow").then((d) => d.result && rsFlow(d.result)).catch(() => {}));
+
+function rsListings(r) {
+  const rows = [];
+  const W = { pre3: "公告前 3 天", d1: "公告後 1 天", d3: "公告後 3 天", d7: "公告後 7 天" };
+  for (const [period, src] of [["2025-10 之後", r.existing], ["2024-25", r.existing_old || {}]]) {
+    for (const [t, s] of Object.entries(src)) for (const [w, v] of Object.entries(s)) if (v.ab && v.ab.n) rows.push({ period, t, w, ...v });
+  }
+  table($("#rs-listings-t"), [
+    { t: "期間", k: "period" }, { t: "類型", cls: "l", f: (x) => esc(r.types[x.t] || x.t) }, { t: "時段", f: (x) => W[x.w] || x.w },
+    { t: "筆數", f: (x) => x.ab.n }, { t: "vs 同齡幣", f: (x) => `${rsPct(x.ab.mean)} <span class="muted">t=${num(x.ab.t, 1)}</span>` },
+    { t: "原始", f: (x) => rsPct(x.raw.mean) }, { t: "隨機日期 p", f: (x) => rsP((x.placebo || {}).p) },
+  ], rows);
+  const nr = [];
+  for (const [t, s] of Object.entries(r.new || {})) for (const [w, v] of Object.entries(s)) if (v.raw && v.raw.n) nr.push({ t, w, ...v });
+  table($("#rs-listings-new"), [
+    { t: "類型", cls: "l", f: (x) => esc(r.types[x.t] || x.t) }, { t: "上市後", f: (x) => x.w.replace("d", "") + " 天" }, { t: "筆數", f: (x) => x.raw.n },
+    { t: "原始報酬", f: (x) => `${rsPct(x.raw.mean)} <span class="muted">中位 ${pct(Math.expm1(x.raw.median), 1)}，t=${num(x.raw.t, 1)}</span>` },
+    { t: "vs 山寨幣中位數", f: (x) => (x.vs_alts && x.vs_alts.n ? `${rsPct(x.vs_alts.mean)} <span class="muted">t=${num(x.vs_alts.t, 1)}</span>` : "-") },
+  ], nr);
+  $("#rs-listings-n").textContent = "公告數：" + Object.entries(r.announced || {}).map(([k, v]) => `${r.types[k] || k} ${v}`).join("、");
+}
+
+function rsExits(r) {
+  table($("#rs-exit_lab-t"), [
+    { t: "出場方式", cls: "l wrap", k: "label" }, { t: "三段都改善", f: (s) => `${s.n_rules_improved}/${s.n_rules}` },
+    { t: "找參數期 vs 時間出場", f: (s) => `${rsRaw(s.train_mean_diff)} <span class="muted">${s.train_better}/${s.n_rules} 條較好</span>` },
+    { t: "驗證期", f: (s) => `${rsRaw(s.valid_mean_diff)} <span class="muted">${s.valid_better}/${s.n_rules}</span>` },
+    { t: "盲測期", f: (s) => `${rsRaw(s.blind_mean_diff)} <span class="muted">${s.blind_better}/${s.n_rules}</span>` },
+  ], Object.values(r.summary));
+  const imp = r.rules.filter((x) => x.improves.length);
+  $("#rs-exit_lab-imp").innerHTML = imp.length ? "三段都改善的規則：" + imp.map((x) => `${esc(x.trader_id)}（${esc(r.presets[x.best] || x.best || "-")}${x.best ? "，已加成交易員 " + esc(x.trader_id) + "_hx" : ""}）`).join("、") : "沒有規則在三段都改善";
+}
+
+function rsMargin(r) {
+  const src = $("#rs-margin-src").value, L = $("#rs-margin-lev").value;
+  const rows = ((r.sources || {})[src] || []).slice().sort((a, b) => b.mean - a.mean);
+  table($("#rs-margin-t"), [
+    { t: "交易員", cls: "l", f: (x) => `<span class="tid">${esc(x.trader_id)}</span>` }, { t: "筆數", k: "n" }, { t: "每筆", k: "mean", f: (x) => rsRaw(x.mean) },
+    { t: "最大反向（中位／95%）", f: (x) => `${pct(x.mae_p50, 1)}／${pct(x.mae_p95, 1)}` },
+    { t: "安全槓桿", k: "safe_lever", f: (x) => (x.safe_lever == null ? "-" : `${x.safe_lever}x`) },
+    { t: `逐倉 ${L}x 報酬`, f: (x) => rsRaw(x.levers[L].isolated.ret, 0) }, { t: "逐倉強平", f: (x) => `${x.levers[L].isolated.liquidations}／${x.levers[L].isolated.trades}` },
+    { t: "逐倉最大回撤", f: (x) => pct(x.levers[L].isolated.max_dd, 0) },
+    { t: `全倉 ${L}x 報酬`, f: (x) => rsRaw(x.levers[L].cross.ret, 0) },
+    { t: "全倉爆倉", f: (x) => (x.levers[L].cross.blown_at ? `<span class="neg">${esc(x.levers[L].cross.blown_at)}</span>` : "-") },
+    { t: "全倉最大回撤", f: (x) => pct(x.levers[L].cross.max_dd, 0) },
+  ], rows, { sortable: true });
+  $("#rs-margin-meta2").textContent = `每筆用權益 ${pct(r.margin_frac, 0)} 當保證金，最多同時 ${r.max_open} 筆，維持保證金率 ${pct(r.mmr, 1)}`;
+}
+["#rs-margin-src", "#rs-margin-lev"].forEach((s) => $(s).addEventListener("change", () => api("/api/research/margin").then((d) => d.result && rsMargin(d.result)).catch(() => {})));
+
 /* ---------------- shell: jobs indicator, sub-nav, lab steps ---------------- */
 const GLOBAL_JOBS = [
   { url: "/api/backtest/job", label: "回測", tab: "bt" },
@@ -2564,6 +2706,7 @@ const GLOBAL_JOBS = [
   { url: "/api/heat/job", label: "過熱驗證", tab: "ht" },
   { url: "/api/lab/job", label: "實驗室", tab: "lab" },
   { url: "/api/campaigns/job", label: "瓜分活動", tab: "cp" },
+  { url: "/api/research/job", label: "研究", tab: "rs" },
 ];
 async function pollGlobalJobs() {
   const res = await Promise.all(GLOBAL_JOBS.map((g) => api(g.url).catch(() => null)));

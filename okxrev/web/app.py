@@ -1002,6 +1002,34 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     def campaigns_job() -> JSONResponse:
         return ok(camp_job.status())
 
+    research_job = tasks.Job("okxrev.regime", "研究")
+    RESEARCH = {"regime": "okxrev.regime", "xsec": "okxrev.xsec", "flow": "okxrev.flow", "listings": "okxrev.listings",
+                "exit_lab": "okxrev.exit_lab", "margin": "okxrev.margin"}
+
+    @app.get("/api/research/job")
+    def research_job_status() -> JSONResponse:
+        return ok(research_job.status())
+
+    @app.get("/api/research/{name}")
+    def research_result(name: str) -> JSONResponse:
+        if name not in RESEARCH:
+            raise HTTPException(404, "unknown study")
+        import importlib
+        mod = importlib.import_module(RESEARCH[name])
+        out: dict[str, Any] = {"result": mod.load(cfg)}
+        if name == "regime":
+            try:
+                out["current"] = mod.current(cfg)
+            except Exception:
+                out["current"] = {}
+        return ok(out)
+
+    @app.post("/api/research/{name}/run")
+    def research_run(name: str) -> JSONResponse:
+        if name not in RESEARCH:
+            raise HTTPException(404, "unknown study")
+        return ok(research_job.start(cfg, ["--evaluate"], module=RESEARCH[name]))
+
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app
 

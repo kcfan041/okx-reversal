@@ -255,6 +255,27 @@ def evidence_summary(cfg: Config) -> str:
                 lines.append(f"瓜分活動研究（{cr.get('generated_at')}，非盲測、樣本少）：" + "；".join(parts))
     except Exception:
         pass
+    try:
+        from okxrev import regime as RG
+        rr = RG.load(cfg)
+        if rr:
+            parts = []
+            for k, lab in (("main", "2025-10 之後"), ("old", "2024-25")):
+                e = ((rr.get("periods") or {}).get(k) or {}).get("events", {}).get("dn4_h3") or {}
+                if e.get("n"):
+                    parts.append(f"{lab} {e['n']} 次、之後 3 天大盤 {pc(math.expm1(e['mean']))}（平常 {pc(math.expm1(e['all_days']))}，打亂順序 p={e['p']:.3f}）")
+            if parts:
+                lines.append("大盤（山寨幣中位數）連跌 4 天後：" + "；".join(parts) + "。連漲連跌的天數本身和隨機差不多")
+    except Exception:
+        pass
+    try:
+        from okxrev import exit_lab as XL
+        xr = XL.load(cfg)
+        if xr:
+            n_imp = sum(1 for x in xr["rules"] if x["improves"])
+            lines.append(f"人性化出場研究：止盈止損、移動停利、保本、分批、結構止損，平均都比規則原本的時間出場差（{len(xr['rules'])} 條規則，三段都改善的只有 {n_imp} 條，幅度很小）")
+    except Exception:
+        pass
     from okxrev import ml
     if ml.has_model(cfg, "ml") or ml.has_model(cfg, "twin"):
         lines.append("機器學習與使用者分身：只有紙上交易／盲測重播的排行可作為證據，請以 paper_trading 工具查實際成績")

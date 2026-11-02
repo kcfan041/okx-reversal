@@ -236,6 +236,11 @@ SECONDARY: list[C] = [
     C("oi_up", "OI 24h 增加 > 20%", gt("oi_chg", 0.2), "oi"),
     C("oi_dn", "OI 24h 減少 > 15%", lt("oi_chg", -0.15), "oi"),
 ]
+MARKET_SECONDARY: list[C] = [
+    C("mkt_dn3", "大盤連跌 ≥3 天", gt("mkt_dn", 2.5), "market"),
+    C("mkt_up3", "大盤連漲 ≥3 天", gt("mkt_up", 2.5), "market"),
+    C("mkt_flat", "大盤沒有連漲／連跌 3 天", lambda f: lt("mkt_dn", 2.5)(f) & lt("mkt_up", 2.5)(f), "market"),
+]
 
 
 @dataclass
@@ -610,6 +615,12 @@ def secondary_filters(cfg: Config, ev: pd.DataFrame, rules: list[Rule], results:
         d = ev[(ev["rule"] == ri) & (ev["exit"] == r["exit"])]
         for inst, x in d.groupby("inst", observed=True):
             need.setdefault(inst, []).extend(x["ts"].tolist())
+    try:
+        from okxrev import regime
+        C_, _ = regime.daily_panel(cfg.paths.db)
+        mkt = regime.streaks(regime.alt_index(C_)["ret"])
+    except Exception:
+        mkt = None
     fo_vals: dict[tuple[str, int], tuple[float, float]] = {}
     with db.open_db(cfg.paths.db, read_only=True) as con:
         for inst, tss in need.items():
@@ -627,7 +638,20 @@ def secondary_filters(cfg: Config, ev: pd.DataFrame, rules: list[Rule], results:
         d["funding"] = [v[0] for v in vals]
         d["oi_chg"] = [v[1] for v in vals]
         has = d[d["funding"].notna() | d["oi_chg"].notna()]
+        mrows = []
+        if mkt is not None:
+            sd = mkt.reindex((d["ts"].to_numpy(np.int64) // DAY) * DAY - DAY)
+            fm = {"mkt_dn": sd["dn"].to_numpy(float), "mkt_up": sd["up"].to_numpy(float)}
+            for c in MARKET_SECONDARY:
+                m = c.fn(fm)
+                if m.sum() >= 5:
+                    s = day_stats(d.loc[m, "ret"].to_numpy(), d.loc[m, "ts"].to_numpy(np.int64), boot=0)
+                    mrows.append({"cond": c.label, **{k: s.get(k) for k in ("n", "n_days", "mean", "win_rate")}})
         if len(has) < 10:
+            if mrows:
+                all_s = day_stats(d["ret"].to_numpy(), d["ts"].to_numpy(np.int64), boot=0)
+                out.append({"label": r["label"], "exit": r["exit"], "n_with_data": int(len(d)), "since": ms_to_str(int(d["ts"].min())),
+                            "base": {k: all_s.get(k) for k in ("n", "mean", "win_rate")}, "filters": mrows})
             continue
         fa = {"funding": has["funding"].to_numpy(float), "oi_chg": has["oi_chg"].to_numpy(float)}
         rows = []
@@ -638,6 +662,7 @@ def secondary_filters(cfg: Config, ev: pd.DataFrame, rules: list[Rule], results:
                 continue
             s = day_stats(has.loc[m, "ret"].to_numpy(), has.loc[m, "ts"].to_numpy(np.int64), boot=0)
             rows.append({"cond": c.label, **{k: s.get(k) for k in ("n", "n_days", "mean", "win_rate")}})
+        rows += mrows
         out.append({"label": r["label"], "exit": r["exit"], "n_with_data": int(len(has)),
                     "since": ms_to_str(int(has["ts"].min())), "base": {k: base_s.get(k) for k in ("n", "mean", "win_rate")}, "filters": rows})
     return out

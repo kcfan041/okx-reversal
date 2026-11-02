@@ -802,6 +802,53 @@ class Toolbox:
                 d[k] = _r(d.get(k), 4)
         return out
 
+    def research(self, topic: str) -> dict[str, Any]:
+        """Other studies: market streaks, cross-sectional momentum, taker / premium divergence, listing announcements,
+        human-like exits, isolated vs cross margin. Compact summary of the stored result."""
+        import importlib
+        mods = {"market_streak": "okxrev.regime", "cross_section": "okxrev.xsec", "flow_premium": "okxrev.flow", "listings": "okxrev.listings",
+                "exits": "okxrev.exit_lab", "margin": "okxrev.margin"}
+        if topic not in mods:
+            raise ToolError(f"topic 必須是 {', '.join(mods)}")
+        mod = importlib.import_module(mods[topic])
+        r = mod.load(self.cfg)
+        if not r:
+            return {"status": "尚未執行（更多研究分頁按「重跑」）"}
+        out: dict[str, Any] = {"generated_at": r.get("generated_at"), "caveats": r.get("caveats"), "note": "報酬是對數報酬"}
+        if topic == "market_streak":
+            out["current"] = mod.current(self.cfg)
+            per = {}
+            for k, p in r["periods"].items():
+                ev = {e: {x: _r(v, 4) for x, v in p["events"][e].items() if x != "dates"} for e in ("dn3_h3", "dn4_h1", "dn4_h3", "dn4_h5", "up3_h3", "up4_h3") if e in p["events"]}
+                per[k] = {"range": p.get("range"), "events": ev,
+                          "runs": {x: _r(p["runs"].get(x), 3) for x in ("up_mean", "up_mean_random", "down_mean", "down_mean_random", "runs_p")} if p.get("runs") else None,
+                          "basket_top20": {b: _rec(p.get("basket", {}).get(b) or {}, 4) for b in ("dn3_h3_n20", "dn4_h3_n20")}}
+            out["periods"] = per
+            out["rules_by_market"] = [{k: x[k] for k in ("label", "exit", "n", "all", "dn3", "up3")} for x in r.get("rules", [])][:15]
+        elif topic == "cross_section":
+            out["segments"] = r["segments"]
+            out["combos"] = [{"lookback_d": c["lookback_d"], "hold_d": c["hold_d"], "side": c["side"], "verdict": c["verdict"],
+                              **{s: _r((c.get(s) or {}).get(c["key"]), 4) for s in ("train", "valid", "blind")}} for c in r["combos"]]
+        elif topic == "flow_premium":
+            out["segments"] = r["segments"]
+            out["events"] = [{"name": e["name"], "label": e["label"], "hold_h": e["hold_h"], "verdict": e["verdict"],
+                              **{s: {k: _r((e.get(s) or {}).get(k), 4) for k in ("n", "mean", "ctrl_mean", "t_vs_ctrl")} for s in ("train", "valid", "blind")}}
+                             for e in r["events"] if e["verdict"] != "資料不足"]
+        elif topic == "listings":
+            out["types"] = r["types"]
+            out["existing"] = {t: {w: {"vs_age_matched": _rec(v[w]["ab"], 4), "placebo": v[w].get("placebo")} for w in v} for t, v in r["existing"].items()}
+            out["new"] = {t: {w: {"raw": _rec(v[w]["raw"], 4), "vs_alts": _rec(v[w]["vs_alts"], 4)} for w in v} for t, v in r["new"].items()}
+        elif topic == "exits":
+            out["summary"] = r["summary"]
+            out["improved_rules"] = [{"trader_id": x["trader_id"], "best": x["best"], "improves": x["improves"]} for x in r["rules"] if x["improves"]]
+        elif topic == "margin":
+            out["setup"] = {k: r.get(k) for k in ("margin_frac", "max_open", "mmr", "levers")}
+            out["traders"] = {src: [{"trader_id": x["trader_id"], "n": x["n"], "mean": _r(x["mean"], 4), "mae_p95": _r(x["mae_p95"], 3), "safe_lever": x["safe_lever"],
+                                     **{f"{L}x": {"isolated_ret": _r(x["levers"][L]["isolated"]["ret"], 3), "isolated_liq": x["levers"][L]["isolated"]["liquidations"],
+                                                  "cross_ret": _r(x["levers"][L]["cross"].get("ret"), 3), "cross_blown": x["levers"][L]["cross"].get("blown_at")}
+                                        for L in ("5", "10", "20")}} for x in sorted(rows, key=lambda y: -y["mean"])[:15]] for src, rows in r["sources"].items()}
+        return out
+
     def custom_rules(self, rule_id: str | None = None) -> dict[str, Any]:
         """Rules saved from the event lab: definition, test results, recent triggers and paper results."""
         from okxrev import custom_rules as CR
@@ -958,6 +1005,8 @@ TOOLS: dict[str, dict[str, Any]] = {
                                     "inst": INST, "at": TIME})},
     "campaigns": {"desc": "OKX 瓜分活動（閃賺／空投賺幣／交易賺幣）：活動代幣在各時段相對同齡幣的超額報酬研究、隨機日期對照、大盤方向分組；給 inst 時列出這個幣的歷次活動與結果，否則列出最近的活動與到目前為止的報酬",
                   "params": _p({"inst": INST})},
+    "research": {"desc": "其他研究結果：market_streak（大盤連漲連跌與連跌後反彈）、cross_section（橫斷面動能／反轉）、flow_premium（主動買賣與合約溢價背離）、listings（上幣／下架公告）、exits（人性化出場 vs 時間出場）、margin（全倉／逐倉與安全槓桿）",
+                 "params": _p({"topic": {"type": "string", "enum": ["market_streak", "cross_section", "flow_premium", "listings", "exits", "margin"]}}, ["topic"])},
     "custom_rules": {"desc": "使用者在事件實驗室存的自訂規則：定義、測試與盲測結果、即時觸發與紙上交易結果", "params": _p({"rule_id": S})},
 }
 

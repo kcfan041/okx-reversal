@@ -102,8 +102,8 @@ class Panel:
         return s, mv
 
 
-def hourly_panel(cfg: Config, since: int) -> Panel:
-    with db.open_db(cfg.paths.db, read_only=True, wait_sec=2.0, max_tries=60) as con:
+def hourly_panel(cfg: Config, since: int, path: Any = None) -> Panel:
+    with db.open_db(path or cfg.paths.db, read_only=True, wait_sec=2.0, max_tries=60) as con:
         h = con.execute(f"""
             SELECT inst_id, (ts // {H}) * {H} AS h, arg_max(close, ts) AS c, SUM(vol_quote) AS vq
             FROM candles WHERE ts >= ? AND inst_id LIKE '%-USDT-SWAP' GROUP BY 1, 2""", [since]).df()

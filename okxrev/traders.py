@@ -501,7 +501,7 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
     out: list[Trader] = []
     pc = cfg.paper
     kinds = {"rule": True, "rule_sl20": True, "lab": True, "heat": True, "ml": True, "twin": True, "llm": True,
-             "follow_long": True, "follow_short": True, "inverse": True, "fade": True, "campaign": True, **(pc.get("kinds") or {})}
+             "follow_long": True, "follow_short": True, "inverse": True, "fade": True, "campaign": True, "regime": True, "human_exit": True, **(pc.get("kinds") or {})}
     res = discover.load(cfg) or {}
     active = [r for r in res.get("results", []) if r["verdict"] in ("可用", "觀察中")] if kinds["rule"] else []
     exits_used = sorted({r["exit"] for r in active} | {"6h_sl2atr"})
@@ -520,6 +520,10 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
                     "holdout_n": r["holdout"]["n"], "holdout_mean": r["holdout"]["mean"], "base_hold": r["base_hold"]}
             out.append(InverseTrader(RuleTrader(r, tid), info))
             exits_used = sorted(set(exits_used) | {r["exit"]})
+    from okxrev import exit_lab
+    hx = exit_lab.traders(cfg, [t for t in out if isinstance(t, RuleTrader)], kinds)
+    out += hx
+    exits_used = sorted(set(exits_used) | {t.inner.exit for t in hx})
     from okxrev import custom_rules
     lab = custom_rules.traders(cfg) if kinds["lab"] else []
     out += lab
@@ -564,8 +568,9 @@ def build(cfg: Config, which: set[str] | None = None) -> list[Trader]:
             for ex in sorted({t.exit for t in fades}):
                 if not any(isinstance(t, RandomTrader) and t.side == side and t.exit == ex for t in out):
                     out.append(RandomTrader(side, ex, prob))
-    from okxrev import campaigns
+    from okxrev import campaigns, regime
     out += campaigns.traders(cfg, kinds)
+    out += regime.traders(kinds)
     from okxrev import follow
     out += follow.traders(kinds)
     if which:
