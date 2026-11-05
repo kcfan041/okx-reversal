@@ -13,13 +13,11 @@
     <div class="nav-group">
       <div class="nav-label">資料</div>
       <button data-tab="dash" class="active">儀表板</button>
-      <button data-tab="ctrl">同步控制</button>
+      <button data-tab="mk">大盤</button>
       <button data-tab="kl">K 線</button>
     </div>
     <div class="nav-group">
       <div class="nav-label">研究</div>
-      <button data-tab="bt">回測</button>
-      <button data-tab="ev">事件</button>
       <button data-tab="dc">進場探索</button>
       <button data-tab="lab">事件實驗室</button>
       <button data-tab="cp">瓜分活動</button>
@@ -67,8 +65,26 @@
       <div id="dash-layers"></div>
     </div>
     <div class="panel">
-      <h2>排程</h2>
+      <h2>排程與控制 <button class="gear-sm" data-settings="collect" title="資料收集設定">⚙</button></h2>
       <div id="dash-task"></div>
+      <div class="row">
+        <button id="btn-run" class="primary">立即執行同步</button>
+        <button id="btn-pause">暫停收集</button>
+        <button id="btn-resume">恢復收集</button>
+      </div>
+      <div id="ctrl-collect" class="muted"></div>
+      <div class="row">
+        <input id="only-insts" placeholder="只同步指定合約，以空白或逗號分隔，例如 BTC-USDT-SWAP PEPE-USDT-SWAP" style="flex:1">
+        <button id="btn-only">執行</button>
+      </div>
+      <details class="hint"><summary>暫停是怎麼運作的？</summary>
+        <ul>
+          <li><b>暫停收集</b>：建立 <code>data/PAUSE</code>，排程仍每 5 分鐘觸發但立即結束（幾乎不耗資源）；紙上交易、過熱分數更新、提醒、實驗室規則偵測也一起停。</li>
+          <li><b>恢復</b>：移除旗標。下一次同步會補回 K 線、主動買賣量（60 天內）、溢價、資金費率等可回補的資料（停很久時會分幾輪補完）；多空比（約 1 天）、爆倉（每幣最新約 100 筆）、OI 5 分鐘（幾小時）超過保留期的部分無法補回。</li>
+          <li>暫停中按「立即執行同步」或「立即跑一輪」紙上交易會先確認。網頁的即時查詢（持倉、盯盤、AI 即時資料）不受影響。</li>
+          <li>命令列：<code>uv run python -m okxrev.collect --pause | --resume | --status</code></li>
+          <li>不會修改 Windows 工作排程本身（需要系統管理員權限）。若排程被手動停用，這裡會提示。</li>
+        </ul></details>
     </div>
   </div>
   <div class="panel">
@@ -88,99 +104,56 @@
       <div id="dash-gaps"><span class="muted">按「計算」掃描全部 K 線（可能需數秒）</span></div>
     </div>
   </div>
-</section>
-
-<!-- 同步控制 -->
-<section id="tab-ctrl" class="tab">
-  <div class="panel">
-    <h2>控制 <button class="gear-sm" data-settings="collect" title="資料收集設定">⚙</button></h2>
-    <div class="row">
-      <button id="btn-run" class="primary">立即執行同步</button>
-      <button id="btn-pause">暫停收集</button>
-      <button id="btn-resume">恢復收集</button>
-      <span id="ctrl-state"></span>
-    </div>
-    <div id="ctrl-collect" class="muted"></div>
-    <details class="hint"><summary>暫停是怎麼運作的？</summary>
-      <ul>
-        <li><b>暫停收集</b>：建立 <code>data/PAUSE</code>，排程仍每 5 分鐘觸發但立即結束（幾乎不耗資源）；紙上交易、過熱分數更新、提醒、實驗室規則偵測也一起停。</li>
-        <li><b>恢復</b>：移除旗標。下一次同步會補回 K 線、主動買賣量、溢價、資金費率等可回補的資料（停很久時會分幾輪補完）；多空比（約 1 天）、爆倉（每幣最新約 100 筆）、OI 5 分鐘（幾小時）超過保留期的部分無法補回。</li>
-        <li>暫停中按「立即執行同步」或「立即跑一輪」紙上交易會先確認。網頁的即時查詢（持倉、盯盤、AI 即時資料）不受影響。</li>
-        <li>命令列：<code>uv run python -m okxrev.collect --pause | --resume | --status</code></li>
-        <li>不會修改 Windows 工作排程本身（需要系統管理員權限）。若排程被手動停用，這裡會提示。</li>
-      </ul></details>
-    <div class="row">
-      <input id="only-insts" placeholder="只同步指定合約，以空白或逗號分隔，例如 BTC-USDT-SWAP PEPE-USDT-SWAP" style="flex:1">
-      <button id="btn-only">執行</button>
-    </div>
-  </div>
   <div class="panel">
     <h2>同步日誌 <label class="muted"><input type="checkbox" id="log-follow" checked> 自動更新</label></h2>
     <pre id="sync-log" class="log"></pre>
   </div>
 </section>
 
-<!-- 回測 -->
-<section id="tab-bt" class="tab">
-  <div class="panel">
-    <h2>執行回測</h2>
-    <div class="row">
-      <label>起 <input type="date" id="bt-since"></label>
-      <label>迄 <input type="date" id="bt-until"></label>
-      <label><input type="checkbox" id="bt-sweep"> 參數掃描</label>
-      <label><input type="checkbox" id="bt-charts"> 產生事件圖</label>
-      <input id="bt-insts" placeholder="限定合約（選填）" style="flex:1">
-      <button id="btn-bt" class="primary">開始</button>
-      <button id="btn-bt-stop">停止</button>
+<!-- 大盤 -->
+<section id="tab-mk" class="tab">
+  <div class="row mk-bar">
+    <div class="seg small" id="mk-days" role="tablist" aria-label="期間">
+      <button data-d="1">1 天</button><button data-d="3">3 天</button><button data-d="7" class="on">7 天</button><button data-d="14">14 天</button><button data-d="30">30 天</button>
     </div>
-    <pre id="bt-log" class="log short"></pre>
+    <span id="mk-meta" class="muted"></span>
   </div>
+  <div class="cards" id="mk-cards"></div>
+  <div class="panel" id="mk-note"></div>
   <div class="panel">
-    <h2>結果 <small id="bt-meta" class="muted"></small></h2>
-    <div id="bt-coverage" class="muted"></div>
-    <h3>24h 比較（事件 vs 隨機基準）</h3>
-    <div class="scroll"><table id="bt-main"></table></div>
-    <h3>各時間長度平均報酬</h3>
-    <div class="scroll"><table id="bt-hz"></table></div>
-    <div class="grid2">
-      <div>
-        <h3>pump_red 依 BTC 環境</h3>
-        <table id="bt-regime"></table>
-      </div>
-      <div>
-        <h3>pump_red 每月</h3>
-        <table id="bt-month"></table>
-      </div>
+    <h2>走勢 <small class="muted">（期間開始時 = 0%；山寨指數 = 上市滿 30 天的山寨幣每小時報酬中位數累計，不含 BTC、ETH）</small></h2>
+    <div id="mk-chart" class="chart mk-chart"></div>
+    <h3>市場廣度 <small>（比 24 小時前高的幣占多少）</small></h3>
+    <div id="mk-breadth" class="chart small"></div>
+    <h3 class="mk-expo-h">虛擬交易員持倉數 <small>（帳本 C，每小時結束時還開著的倉位；多單往上、空單往下）</small>
+      <select id="mk-expo-kind" aria-label="交易員類型"></select></h3>
+    <div id="mk-expo" class="chart small"></div>
+  </div>
+  <div class="grid2">
+    <div class="panel">
+      <h2>衍生品 <small id="mk-deriv-meta" class="muted"></small></h2>
+      <div id="mk-deriv"></div>
     </div>
-    <h3>參數掃描 <small class="muted">（全部組合；挑最好的一組必然偏樂觀）</small></h3>
-    <div class="scroll"><table id="bt-sweep-t"></table></div>
-    <h3>注意事項</h3>
-    <ul id="bt-caveats" class="muted"></ul>
-  </div>
-</section>
-
-<!-- 事件 -->
-<section id="tab-ev" class="tab">
-  <div class="panel">
-    <div class="row">
-      <select id="ev-mode">
-        <option value="pump_red">pump_red</option>
-        <option value="red_only">red_only</option>
-        <option value="pump_red_btcweak">pump_red_btcweak</option>
-        <option value="">全部模式</option>
-      </select>
-      <select id="ev-regime">
-        <option value="">全部 BTC 環境</option>
-        <option>strong</option><option>neutral</option><option>weak</option><option>unknown</option>
-      </select>
-      <input id="ev-inst" placeholder="合約關鍵字">
-      <button id="btn-ev">篩選</button>
-      <span id="ev-count" class="muted"></span>
+    <div class="panel">
+      <h2>24 小時漲跌分布 <small id="mk-dist-meta" class="muted"></small></h2>
+      <div id="mk-dist" class="mk-dist"></div>
     </div>
   </div>
-  <div class="grid-ev">
-    <div class="panel scroll tall"><table id="ev-table" class="clickable"></table></div>
-    <div class="panel" id="ev-detail"><span class="muted">點選左側事件查看</span></div>
+  <div class="panel">
+    <h2>虛擬交易員在這段期間 <small class="muted">（帳本 C 只記報酬率；平倉報酬依進場時山寨指數 24 小時漲或跌分開）</small></h2>
+    <div class="scroll"><table id="mk-kinds"></table></div>
+    <h3 id="mk-tr-title">各交易員 <small>（點上表的類型篩選，再點一次取消；點交易員看這段期間的倉位）</small>
+      <label class="muted"><input type="checkbox" id="mk-tr-idle"> 顯示沒有動作的</label></h3>
+    <div class="scroll"><table id="mk-tr"></table></div>
+    <div id="mk-tr-pos-box" style="display:none">
+      <h3 id="mk-tr-pos-title"></h3>
+      <div class="scroll"><table id="mk-tr-pos"></table></div>
+    </div>
+  </div>
+  <div class="grid3">
+    <div class="panel"><h2>24h 漲幅前 10</h2><table id="mk-up"></table></div>
+    <div class="panel"><h2>24h 跌幅前 10</h2><table id="mk-down"></table></div>
+    <div class="panel"><h2>成交額暴增 <small class="muted">（24h ÷ 7 日平均，24h ≥ 50 萬 U）</small></h2><table id="mk-surge"></table></div>
   </div>
 </section>
 
@@ -294,6 +267,53 @@
       <span id="rs-margin-meta2" class="muted"></span></div>
     <div class="scroll tall"><table id="rs-margin-t"></table></div>
     <ul id="rs-margin-cav" class="muted"></ul>
+  </div>
+  <div class="panel" id="rs-pool">
+    <h2>共用資金池 <small id="rs-pool-meta" class="muted"></small> <button class="small" data-rs-run="pool">重跑</button></h2>
+    <div class="row"><select id="rs-pool-src"><option value="blind">2024-25 盲測</option><option value="live">即時紙上交易</option></select>
+      <span id="rs-pool-range" class="muted"></span></div>
+    <div id="rs-pool-verdict"></div>
+    <div class="scroll"><table id="rs-pool-cmp"></table></div>
+    <div id="rs-pool-chart" class="chart rs-pool-chart"></div>
+    <h3>所有組合 <small>（主要設定以外的只是參考，挑最好的一組等於事後選）</small></h3>
+    <div class="scroll"><table id="rs-pool-grid"></table></div>
+    <div class="grid2">
+      <div><h3>各成員貢獻 <small>（主要設定，U）</small></h3><div class="scroll"><table id="rs-pool-mem"></table></div></div>
+      <div><h3>每次重選的成員 <small>（主要設定，最近在上；括號是 t 值）</small></h3><div class="scroll"><table id="rs-pool-picks"></table></div></div>
+    </div>
+    <div id="rs-pool-rules" class="muted"></div>
+    <ul id="rs-pool-cav" class="muted"></ul>
+    <h3>模型篩選 <small id="rs-pool-ml-meta" class="muted"></small></h3>
+    <div id="rs-pool-ml-verdict"></div>
+    <div class="scroll"><table id="rs-pool-ml-cmp"></table></div>
+    <div id="rs-pool-ml-chart" class="chart rs-pool-chart"></div>
+    <div class="grid2">
+      <div><h3>每月樣本外 <small>（AUC 0.5 = 分不出好壞）</small></h3><div class="scroll"><table id="rs-pool-ml-months"></table></div></div>
+      <div><h3>模型最看重的特徵 <small>（各月模型的平均增益占比）</small></h3><div class="scroll"><table id="rs-pool-ml-imp"></table></div></div>
+    </div>
+    <div id="rs-pool-ml-live"></div>
+    <ul id="rs-pool-ml-cav" class="muted"></ul>
+  </div>
+  <div class="panel" id="rs-earn">
+    <h2>賺幣利率 <small id="rs-earn-meta" class="muted"></small> <button class="small" data-rs-run="earn">重跑</button></h2>
+    <div id="rs-earn-data" class="muted"></div>
+    <div id="rs-earn-verdict"></div>
+    <h3>買年化最高的幣、放賺幣 <small>（每 30 天換一次，等權重）</small></h3>
+    <div class="scroll"><table id="rs-earn-bk"></table></div>
+    <div id="rs-earn-chart" class="chart rs-pool-chart"></div>
+    <h3>反向：做空年化最高的幣 <small>（同一籃，1 倍保證金，漲一倍就爆倉）</small></h3>
+    <div id="rs-earn-sh-note"></div>
+    <div class="scroll"><table id="rs-earn-sh"></table></div>
+    <div id="rs-earn-sh-chart" class="chart rs-pool-chart"></div>
+    <div class="scroll"><table id="rs-earn-sh-off"></table></div>
+    <h3>年化暴衝之後 <small>（扣掉大盤；對照同一批幣的隨機日子）</small></h3>
+    <div id="rs-earn-spk-note"></div>
+    <div class="scroll"><table id="rs-earn-spk"></table></div>
+    <div class="grid2">
+      <div><h3>依年化分五組 <small>（每 7 天分一次，對所有幣的中位數）</small></h3><div class="scroll"><table id="rs-earn-q"></table></div></div>
+      <div><h3>最近的年化暴衝</h3><div class="scroll"><table id="rs-earn-recent"></table></div></div>
+    </div>
+    <ul id="rs-earn-cav" class="muted"></ul>
   </div>
 </section>
 
@@ -482,6 +502,8 @@
         <button data-kind="follow">跟單</button>
         <button data-kind="inverse">反指標</button><button data-kind="fade">急漲回落</button>
         <button data-kind="heat">過熱</button>
+        <button data-kind="campaign">瓜分活動</button>
+        <button data-kind="regime">大盤連跌</button>
         <button data-kind="model">模型／分身／LLM</button>
         <button data-kind="random">隨機對照</button>
       </span>
@@ -604,8 +626,41 @@
 
   <div class="grid2">
     <div class="panel">
-      <h2>① 事件清單 <small class="muted">（最近 24 小時全市場「急漲後爆跌」，每 5 分鐘更新）</small> <button id="btn-lab-recent" class="small">重新整理</button></h2>
+      <h2>① 事件清單 <button id="btn-lab-recent" class="small">重新整理</button></h2>
+      <div class="row">
+        <select id="lab-src">
+          <option value="recent">最近 24 小時：急漲後爆跌（每 5 分鐘更新）</option>
+          <option value="hist">歷史：暴漲後巨大紅 K（原始回測事件）</option>
+        </select>
+        <span id="lab-hist-filters" class="row" style="display:none">
+          <select id="ev-mode">
+            <option value="pump_red">暴漲後巨大紅 K</option>
+            <option value="red_only">只看巨大紅 K</option>
+            <option value="pump_red_btcweak">暴漲後巨大紅 K＋BTC 弱</option>
+            <option value="">全部模式</option>
+          </select>
+          <select id="ev-regime">
+            <option value="">全部 BTC 環境</option>
+            <option value="strong">BTC 強</option><option value="neutral">BTC 中性</option><option value="weak">BTC 弱</option><option value="unknown">未知</option>
+          </select>
+          <input id="ev-inst" placeholder="合約關鍵字" style="width:110px">
+          <span id="ev-count" class="muted"></span>
+        </span>
+      </div>
       <div class="scroll" style="max-height:300px"><table id="lab-recent" class="clickable"></table></div>
+      <details id="lab-hist-gen" class="hint" style="display:none">
+        <summary>原始假說的結論・重新產生歷史事件</summary>
+        <p id="bt-concl"></p>
+        <p id="bt-meta" class="muted"></p>
+        <div class="row">
+          <label>起 <input type="date" id="bt-since"></label>
+          <label>迄 <input type="date" id="bt-until"></label>
+          <input id="bt-insts" placeholder="限定合約（選填）" style="flex:1">
+          <button id="btn-bt">重新產生</button>
+          <button id="btn-bt-stop">停止</button>
+        </div>
+        <pre id="bt-log" class="log short"></pre>
+      </details>
     </div>
     <div class="panel">
       <h2>事件索引與規則</h2>

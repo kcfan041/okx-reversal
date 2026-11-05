@@ -804,10 +804,10 @@ class Toolbox:
 
     def research(self, topic: str) -> dict[str, Any]:
         """Other studies: market streaks, cross-sectional momentum, taker / premium divergence, listing announcements,
-        human-like exits, isolated vs cross margin. Compact summary of the stored result."""
+        human-like exits, isolated vs cross margin, shared-capital pool, Simple Earn rates. Compact summary of the stored result."""
         import importlib
         mods = {"market_streak": "okxrev.regime", "cross_section": "okxrev.xsec", "flow_premium": "okxrev.flow", "listings": "okxrev.listings",
-                "exits": "okxrev.exit_lab", "margin": "okxrev.margin"}
+                "exits": "okxrev.exit_lab", "margin": "okxrev.margin", "pool": "okxrev.pool", "earn": "okxrev.earn"}
         if topic not in mods:
             raise ToolError(f"topic 必須是 {', '.join(mods)}")
         mod = importlib.import_module(mods[topic])
@@ -847,6 +847,46 @@ class Toolbox:
                                      **{f"{L}x": {"isolated_ret": _r(x["levers"][L]["isolated"]["ret"], 3), "isolated_liq": x["levers"][L]["isolated"]["liquidations"],
                                                   "cross_ret": _r(x["levers"][L]["cross"].get("ret"), 3), "cross_blown": x["levers"][L]["cross"].get("blown_at")}
                                         for L in ("5", "10", "20")}} for x in sorted(rows, key=lambda y: -y["mean"])[:15]] for src, rows in r["sources"].items()}
+        elif topic == "pool":
+            out["note"] = "報酬是簡單百分比"
+            out["params"] = r["params"]
+            keys = ("ret", "max_dd", "underwater_days", "worst_week", "worst_30d", "pos_weeks", "trades", "halts", "halves")
+            out["sources"] = {src: {"range": s["range"], "runs": [{"k": x["k"], "look_d": x["look"], "main": x["main"], **{k: _r(x.get(k), 4) for k in keys},
+                                                                   "random_members": _rec(x["random_members"], 4),
+                                                                   **({c: {k: _r(x[c].get(k), 4) for k in keys} for c in ("no_brakes", "all", "random_entries")} if x["main"] else {}),
+                                                                   **({"top_members": x.get("by_member", [])[:8], "last_picks": x.get("picks", [])[-4:]} if x["main"] else {})}
+                                                                  for x in s["runs"]]} for src, s in r["sources"].items()}
+            mlr = r.get("model") or {}
+            if mlr.get("blind"):
+                b, keys2 = mlr["blind"], keys + ("ret_ex_best_week",)
+                out["model_filter"] = {
+                    "what": f"每月重訓 LightGBM 替候選訊號打分數（標籤：止損後賺錢），只接分數前 {mlr['params']['main_f']:.0%}，丟進同一套資金池規則；從 {b['oos_start']} 開始逐月樣本外",
+                    "runs": {k: {kk: _r(v.get(kk), 4) for kk in keys2} for k, v in (("pool_main", b["runs"]["pool_main"]), ("pool_plus_model", b["runs"]["pool_model"]),
+                                                                                  ("all_signals", b["runs"]["all"]), *((f"model_top_{float(f):.0%}", x) for f, x in b["runs"]["model"].items()))},
+                    "random_same_size": _rec(b["random_same"], 4), "per_trade": _rec(b["per_trade"], 4),
+                    "months": [{k: _r(m.get(k), 4) for k in ("month", "auc", "all_mean", "sel_mean", "n_sel", "n")} for m in b["months"]],
+                    "top_features": [{"feature": x["feature"], "gain": _r(x["gain"], 3)} for x in b["importance"][:10]],
+                    "live": ({"range": mlr["live"]["range"], "auc": _r(mlr["live"]["auc"], 3), "per_trade": _rec(mlr["live"]["per_trade"], 4),
+                              "pool_model_ret": _r(mlr["live"]["runs"]["model"]["ret"], 4), "pool_all_ret": _r(mlr["live"]["runs"]["all"]["ret"], 4),
+                              "random_same_size": _rec(mlr["live"]["random_same"], 4)} if mlr.get("live") else None)}
+        elif topic == "earn":
+            out["note"] = "報酬是簡單百分比；利率是年化；利息假設全部借出（上限）"
+            out["range"], out["params"] = r["range"], r["params"]
+            b = r["baskets"]
+            out["baskets"] = {"start": b["start"], "random_top_n": _rec(b["random"], 4), "random_exit_vs_spike_exit": _rec(b.get("random_exit") or {}, 4),
+                              "runs": {k: {kk: _r(v.get(kk), 4) for kk in ("ret", "max_dd", "avg_rate", "pos_periods", "worst_period", "halves", "exits")}
+                                       for k, v in b["runs"].items()},
+                              "last_pick": b.get("last_pick")}
+            sp = r.get("spikes") or {}
+            out["rate_spikes"] = {k: _rec(v, 4) if isinstance(v, dict) else v for k in ("n", "coins", "by", "placebo", "after_pump", "no_pump") if (v := sp.get(k)) is not None}
+            out["rate_spikes"]["recent"] = (sp.get("recent") or [])[:10]
+            out["quintiles"] = _rec(r.get("quintiles") or {}, 4)
+            sh = r.get("short") or {}
+            if sh.get("runs"):
+                out["short"] = {"note": "反向：做空同一籃（1 倍保證金）；short_margin／hedge_margin 付借出利率當成本下限；*_w 是有資金費率的期間；offsets 是晚幾天開始的同一設定",
+                                "runs": {k: {kk: _r(v.get(kk), 4) for kk in ("ret", "max_dd", "pos_periods", "worst_period", "halves")} for k, v in sh["runs"].items()},
+                                "random_short": _rec(sh["random"], 4), "window": _rec(sh.get("window") or {}, 4),
+                                "offsets": [_rec(o, 4) for o in sh.get("offsets") or []]}
         return out
 
     def custom_rules(self, rule_id: str | None = None) -> dict[str, Any]:
@@ -1005,8 +1045,8 @@ TOOLS: dict[str, dict[str, Any]] = {
                                     "inst": INST, "at": TIME})},
     "campaigns": {"desc": "OKX 瓜分活動（閃賺／空投賺幣／交易賺幣）：活動代幣在各時段相對同齡幣的超額報酬研究、隨機日期對照、大盤方向分組；給 inst 時列出這個幣的歷次活動與結果，否則列出最近的活動與到目前為止的報酬",
                   "params": _p({"inst": INST})},
-    "research": {"desc": "其他研究結果：market_streak（大盤連漲連跌與連跌後反彈）、cross_section（橫斷面動能／反轉）、flow_premium（主動買賣與合約溢價背離）、listings（上幣／下架公告）、exits（人性化出場 vs 時間出場）、margin（全倉／逐倉與安全槓桿）",
-                 "params": _p({"topic": {"type": "string", "enum": ["market_streak", "cross_section", "flow_premium", "listings", "exits", "margin"]}}, ["topic"])},
+    "research": {"desc": "其他研究結果：market_streak（大盤連漲連跌與連跌後反彈）、cross_section（橫斷面動能／反轉）、flow_premium（主動買賣與合約溢價背離）、listings（上幣／下架公告）、exits（人性化出場 vs 時間出場）、margin（全倉／逐倉與安全槓桿）、pool（共用資金池：交易員依過去績效輪流進池，對照隨機挑成員；另含模型篩選：逐筆打分數只接高分訊號）、earn（簡單賺幣利率：買年化高的幣放賺幣能不能補跌幅、反向做空這些幣、年化暴衝之後的走勢）",
+                 "params": _p({"topic": {"type": "string", "enum": ["market_streak", "cross_section", "flow_premium", "listings", "exits", "margin", "pool", "earn"]}}, ["topic"])},
     "custom_rules": {"desc": "使用者在事件實驗室存的自訂規則：定義、測試與盲測結果、即時觸發與紙上交易結果", "params": _p({"rule_id": S})},
 }
 

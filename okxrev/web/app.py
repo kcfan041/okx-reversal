@@ -1004,7 +1004,8 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     research_job = tasks.Job("okxrev.regime", "研究")
     RESEARCH = {"regime": "okxrev.regime", "xsec": "okxrev.xsec", "flow": "okxrev.flow", "listings": "okxrev.listings",
-                "exit_lab": "okxrev.exit_lab", "margin": "okxrev.margin"}
+                "exit_lab": "okxrev.exit_lab", "margin": "okxrev.margin", "pool": "okxrev.pool",
+                "earn": "okxrev.earn"}
 
     @app.get("/api/research/job")
     def research_job_status() -> JSONResponse:
@@ -1029,6 +1030,26 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if name not in RESEARCH:
             raise HTTPException(404, "unknown study")
         return ok(research_job.start(cfg, ["--evaluate"], module=RESEARCH[name]))
+
+    @app.get("/api/market")
+    def market_overview(days: int = 7) -> JSONResponse:
+        from okxrev import market
+        try:
+            return ok(market.overview(cfg, days))
+        except db.DbBusy:
+            raise HTTPException(503, "資料庫忙碌中")
+
+    @app.get("/api/market/positions")
+    def market_positions(trader: str, days: int = 7) -> JSONResponse:
+        from okxrev import market
+        if not re.match(r"^[A-Za-z0-9_\-.]{1,80}$", trader):
+            raise HTTPException(400, "bad trader")
+        try:
+            return ok(market.trader_positions(cfg, trader, max(1, min(days, 60))))
+        except FileNotFoundError:
+            return ok([])
+        except db.DbBusy:
+            raise HTTPException(503, "紙上交易資料庫忙碌中")
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app

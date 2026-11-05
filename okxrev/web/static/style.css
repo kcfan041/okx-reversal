@@ -238,3 +238,22 @@ table.mini { width: auto; margin-top: 6px; }
 .pp-fold { border-top: 1px solid var(--border); padding: 8px 0; }
 .pp-fold > summary { cursor: pointer; font-weight: 600; }
 .pp-note > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+/* 大盤 */
+.mk-bar { margin-bottom: 12px; }
+.mk-chart { height: 320px; }
+.mk-expo-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mk-expo-h select { margin-left: auto; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 1100px) { .grid3 { grid-template-columns: 1fr; } }
+.mk-days { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0 8px; }
+.mk-days span { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: #1d242c; }
+.mk-days span.up { background: #16392f; color: #6fd3b0; }
+.mk-days span.dn { background: #43201f; color: #ff8a80; }
+.mk-dist { display: grid; grid-template-columns: 92px 1fr 44px; gap: 4px 10px; align-items: center; font-size: 13px; }
+.mk-dist .bar { height: 14px; border-radius: 3px; min-width: 1px; }
+.mk-dist .bar.up { background: var(--up); }
+.mk-dist .bar.dn { background: var(--down); }
+.mk-kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font-size: 13px; }
+.mk-kv dt { color: var(--muted); }
+.mk-kv dd { margin: 0; }
+.chart.rs-pool-chart { height: 260px; margin-top: 10px; }

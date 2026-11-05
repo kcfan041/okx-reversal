@@ -74,7 +74,10 @@ function table(el, cols, rows, opts = {}) {
 /* ---------------- tabs ---------------- */
 let currentTab = "dash";
 document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+const TAB_ALIAS = { ctrl: "dash", bt: "lab", ev: "lab" };   // pages merged away; old links still land somewhere useful
 function showTab(t) {
+  if (t === "bt" || t === "ev") labSrcSet("hist");
+  t = TAB_ALIAS[t] || t;
   if (!document.getElementById(`tab-${t}`)) t = "dash";
   currentTab = t;
   document.querySelectorAll("nav button").forEach((b) => {
@@ -87,10 +90,8 @@ function showTab(t) {
   if (location.hash.slice(1) !== t) location.hash = t;
   window.scrollTo({ top: 0 });
   if (t === "lab") labSteps();
-  if (t === "dash") loadDash();
-  if (t === "ctrl") loadLog();
-  if (t === "bt") { loadResults(); pollJob(); }
-  if (t === "ev") loadEvents();
+  if (t === "dash") { loadDash(); loadLog(); }
+  if (t === "mk") { mkCharts(); mkResize(); loadMarket(); }
   if (t === "ac") { loadAccount(); pollAcctJob(); }
   if (t === "dc") { loadDiscover(); pollDiscJob(); loadScan(); }
   if (t === "pp") { loadPaper(); pollPaperJobs(); }
@@ -184,11 +185,10 @@ async function loadTaskBox() {
   const html = t.registered
     ? `<dl class="kv"><div>${state} ${running}</div>
         <div>工作排程器狀態：${esc(t.state)}</div>
-        <div>上次觸���：${utc(Date.parse(t.last_run))} UTC（${esc(TASK_RESULT[t.last_result] ?? t.last_result)}）</div>
+        <div>上次觸發：${utc(Date.parse(t.last_run))} UTC（${esc(TASK_RESULT[t.last_result] ?? t.last_result)}）</div>
         <div>下次觸發：${t.next_run ? utc(Date.parse(t.next_run)) + " UTC" : "-"}</div></dl>`
     : `<div>${state} ${running}</div><p class="warn">找不到排程：${esc(t.error || "")}</p>`;
   $("#dash-task").innerHTML = html;
-  $("#ctrl-state").innerHTML = `${state} ${running}`;
 }
 
 async function loadRuns() {
@@ -300,14 +300,14 @@ async function loadLog() {
   renderLog($("#sync-log"), r.lines);
 }
 
-/* ---------------- backtest ---------------- */
+/* ---------------- historical events (original backtest), shown in the event lab ---------------- */
 let jobWasRunning = false;
 $("#btn-bt").addEventListener("click", async () => {
   const body = {
     since: $("#bt-since").value || null,
     until: $("#bt-until").value || null,
-    sweep: $("#bt-sweep").checked,
-    charts: $("#bt-charts").checked,
+    sweep: false,
+    charts: false,
     insts: $("#bt-insts").value.split(/[\s,]+/).filter(Boolean),
   };
   if (!body.insts.length) body.insts = null;
@@ -323,88 +323,41 @@ async function pollJob() {
   if (!j) return;
   renderLog($("#bt-log"), j.log.length ? j.log : [j.returncode == null ? "（尚未執行）" : `（結束，代碼 ${j.returncode}）`]);
   $("#btn-bt").disabled = j.running;
+  if (j.running) $("#lab-hist-gen").open = true;
   if (jobWasRunning && !j.running) {
-    toast(j.returncode === 0 ? "回測完成" : `回測結束，代碼 ${j.returncode}`, j.returncode !== 0);
+    toast(j.returncode === 0 ? "歷史事件已重新產生" : `重新產生結束，代碼 ${j.returncode}`, j.returncode !== 0);
     loadResults();
+    if (labSrc() === "hist") loadEvents();
   }
   jobWasRunning = j.running;
 }
 
-const MODES = ["red_only", "pump_red", "pump_red_btcweak"];
-const BASES = ["random_pump", "random_any"];
+const MODE_LABEL = { pump_red: "暴漲後巨大紅 K", red_only: "只看巨大紅 K", pump_red_btcweak: "暴漲後巨大紅 K＋BTC 弱" };
+const REGIME_LABEL = { strong: "強", neutral: "中性", weak: "弱", unknown: "未知" };
 async function loadResults() {
   let s;
-  try { s = await api("/api/results/summary"); } catch (e) { $("#bt-meta").textContent = e.message; return; }
-  $("#bt-meta").textContent = `產生於 ${s.generated_at}，耗時 ${s.elapsed_sec} 秒；區間 ${s.range.since || "開始"} ～ ${s.range.until || "最新"}`;
-  const c = s.data_coverage;
-  $("#bt-coverage").textContent = `資料：${c.n_insts} 合約（測試 ${c.n_insts_tested}），${c.first_ts} ～ ${c.last_ts}，最早時間中位數 ${c.median_oldest_ts}，回補完成 ${c.backfill_done}`;
-  const rows = [...MODES.map((m) => ({ name: m, ...s.modes[m] })), ...BASES.map((b) => ({ name: b, base: true, ...s.baselines[b] }))];
-  const h24 = (r) => (r.horizons || {})["24h"] || {};
-  table($("#bt-main"), [
-    { t: "", f: (r) => (r.base ? `<span class="muted">${r.name}</span>` : `<b>${r.name}</b>`) },
-    { t: "n", f: (r) => fmtN(h24(r).n ?? 0) },
-    { t: "合約", f: (r) => h24(r).n_insts ?? 0 },
-    { t: "天數", f: (r) => h24(r).n_days ?? 0 },
-    { t: "24h 平均", f: (r) => pctC(h24(r).mean) },
-    { t: "24h 中位", f: (r) => pctC(h24(r).median) },
-    { t: "下跌率", f: (r) => pct(h24(r).bear_rate) },
-    { t: "跌>20%", f: (r) => pct(r.big_drop_rate_24h) },
-    { t: "再創新高", f: (r) => pct(r.new_high_rate_24h) },
-    { t: "MAE 平均", f: (r) => pct(r.mae_mean) },
-    { t: "MAE p90", f: (r) => pct(r.mae_p90) },
-    { t: "MFE 平均", f: (r) => pct(r.mfe_mean) },
-    { t: "做空淨報酬", f: (r) => pctC(h24(r).short_pnl_net_mean, 2) },
-    { t: "平均 CI95", f: (r) => (h24(r).mean_ci95 ? `[${pct(h24(r).mean_ci95[0])}, ${pct(h24(r).mean_ci95[1])}]` : "-") },
-  ], rows);
-
-  const hz = Object.keys(s.config.metrics.horizons);
-  table($("#bt-hz"), [
-    { t: "", f: (r) => r.name },
-    ...hz.map((h) => ({ t: h, f: (r) => { const x = (r.horizons || {})[h]; return x ? `${pctC(x.mean)} <span class="muted">(${x.n})</span>` : "-"; } })),
-  ], rows);
-
-  const pr = s.modes.pump_red || {};
-  const reg = Object.entries(pr.by_btc_regime || {}).map(([k, v]) => ({ name: k, ...v }));
-  table($("#bt-regime"), [
-    { t: "BTC 環境", k: "name", cls: "l" },
-    { t: "n", f: (r) => h24(r).n ?? 0 },
-    { t: "24h 平均", f: (r) => pctC(h24(r).mean) },
-    { t: "下跌率", f: (r) => pct(h24(r).bear_rate) },
-    { t: "MAE", f: (r) => pct(r.mae_mean) },
-  ], reg);
-  const mon = Object.entries(pr.by_month || {}).map(([k, v]) => ({ m: k, ...v }));
-  table($("#bt-month"), [
-    { t: "月份", k: "m", cls: "l" },
-    { t: "事件數", k: "n" },
-    { t: "24h 平均", f: (r) => pctC(r.fwd_ret_24h_mean) },
-  ], mon);
-
-  const sw = await api("/api/results/sweep").catch(() => []);
-  table($("#bt-sweep-t"), [
-    { t: "紅K ≤", f: (r) => pct(r.red_ret_max, 0) },
-    { t: "量能 ≥", f: (r) => `${r.red_vol_ratio_min}×` },
-    { t: "n", k: "n" }, { t: "合約", k: "n_insts" }, { t: "天數", k: "n_days" },
-    { t: "24h 平���", f: (r) => pctC(r.fwd_ret_24h_mean) },
-    { t: "24h 中位", f: (r) => pctC(r.fwd_ret_24h_median) },
-    { t: "下跌率", f: (r) => pct(r.bear_rate_24h) },
-    { t: "MAE", f: (r) => pct(r.mae_mean) },
-    { t: "做空淨報酬", f: (r) => pctC(r.short_pnl_net_24h_mean, 2) },
-    { t: "CI95", f: (r) => (r.ci95_lo == null ? "-" : `[${pct(r.ci95_lo)}, ${pct(r.ci95_hi)}]`) },
-  ], sw);
-  $("#bt-caveats").innerHTML = (s.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("");
+  try { s = await api("/api/results/summary"); } catch (e) { $("#bt-meta").textContent = e.message; $("#bt-concl").textContent = ""; return; }
+  $("#bt-meta").textContent = `上次產生於 ${s.generated_at}；區間 ${s.range.since || "開始"} ～ ${s.range.until || "最新"}。進場探索、盲測重播和紙上交易已經取代這個回測，這裡只保留事件清單。`;
+  const parts = Object.keys(MODE_LABEL).filter((m) => s.modes[m]).map((m) => {
+    const h = s.modes[m].horizons["24h"] || {};
+    const ci = h.mean_ci95 ? `，價格 95% 區間 ${pct(h.mean_ci95[0])}～${pct(h.mean_ci95[1])}` : "";
+    return `${esc(MODE_LABEL[m])} ${fmtN(h.n ?? 0)} 次，做空 24h 淨報酬 ${pctC(h.short_pnl_net_mean, 2)}${ci}`;
+  });
+  $("#bt-concl").innerHTML = `原始假說「暴漲後巨大 5 分紅 K → 做空」沒有站得住：${parts.join("；")}。`;
 }
 
-/* ---------------- events ---------------- */
-let chartFiles = new Set();
-$("#btn-ev").addEventListener("click", loadEvents);
+$("#lab-src").addEventListener("change", () => { labSrcSet($("#lab-src").value); labRecent(true); });
+["#ev-mode", "#ev-regime"].forEach((x) => $(x).addEventListener("change", loadEvents));
 $("#ev-inst").addEventListener("keydown", (e) => { if (e.key === "Enter") loadEvents(); });
-$("#ev-mode").addEventListener("change", loadEvents);
-$("#ev-regime").addEventListener("change", loadEvents);
-
-function chartName(ev) {
-  const d = new Date(ev.event_ts).toISOString();
-  return `${ev.inst_id}_${d.slice(0, 4)}${d.slice(5, 7)}${d.slice(8, 10)}_${d.slice(11, 13)}${d.slice(14, 16)}.png`;
+function labSrc() { return $("#lab-src").value; }
+function labSrcSet(v) {
+  $("#lab-src").value = v;
+  const hist = v === "hist";
+  $("#lab-hist-filters").style.display = hist ? "" : "none";
+  $("#lab-hist-gen").style.display = hist ? "" : "none";
+  if (hist) { loadResults(); pollJob(); }
 }
+
 async function loadEvents() {
   const q = new URLSearchParams();
   if ($("#ev-mode").value) q.set("mode", $("#ev-mode").value);
@@ -412,42 +365,19 @@ async function loadEvents() {
   if ($("#ev-inst").value) q.set("inst", $("#ev-inst").value);
   const r = await api(`/api/results/events?${q}`).catch((e) => { toast(e.message, true); return null; });
   if (!r) return;
-  chartFiles = new Set(r.charts);
   $("#ev-count").textContent = `${r.total} 筆${r.total > r.events.length ? `（顯示前 ${r.events.length}）` : ""}`;
-  table($("#ev-table"), [
+  table($("#lab-recent"), [
     { t: "時間 (UTC)", sk: "event_ts", f: (e) => utc(e.event_ts) },
     { t: "合約", k: "inst_id", cls: "l" },
-    { t: "模式", k: "mode", cls: "l" },
-    { t: "紅K", k: "red_ret_prev_close", f: (e) => pctC(e.red_ret_prev_close) },
+    { t: "前 24h", k: "ret_24h_pre", f: (e) => pctC(e.ret_24h_pre, 0) },
+    { t: "紅 K", k: "red_ret_prev_close", f: (e) => pctC(e.red_ret_prev_close) },
     { t: "量倍", k: "red_vol_ratio", f: (e) => e.red_vol_ratio?.toFixed(1) },
-    { t: "前24h", k: "ret_24h_pre", f: (e) => pctC(e.ret_24h_pre) },
-    { t: "BTC", k: "btc_regime" },
-    { t: "1h", k: "fwd_ret_1h", f: (e) => pctC(e.fwd_ret_1h) },
-    { t: "24h", k: "fwd_ret_24h", f: (e) => pctC(e.fwd_ret_24h) },
-    { t: "MAE", k: "mae_24h", f: (e) => pct(e.mae_24h) },
-    { t: "MFE", k: "mfe_24h", f: (e) => pct(e.mfe_24h) },
-    { t: "新高", k: "new_high_24h", f: (e) => (e.new_high_24h == null ? "-" : e.new_high_24h ? "是" : "否") },
-    { t: "圖", f: (e) => (chartFiles.has(chartName(e)) ? "有" : "") },
-  ], r.events, { sortable: true, onClick: showEvent });
-}
-function showEvent(e) {
-  const fields = [
-    ["合約", e.inst_id], ["時間", `${utc(e.event_ts)} UTC`], ["模式", e.mode],
-    ["前 1h / 6h / 24h", `${pct(e.ret_1h_pre)} / ${pct(e.ret_6h_pre)} / ${pct(e.ret_24h_pre)}${e.is_new_listing ? "（新上市）" : ""}`],
-    ["紅K（前收 / 實體）", `${pct(e.red_ret_prev_close)} / ${pct(e.red_ret_body)}`],
-    ["量能倍數（紅K / pump 最大）", `${e.red_vol_ratio?.toFixed(1)}× / ${e.pump_vol_ratio_max?.toFixed(1)}×`],
-    ["BTC", `${e.btc_regime}，1h ${pct(e.btc_ret_1h, 2)}，4h ${pct(e.btc_ret_4h, 2)}，低於 EMA：${e.btc_below_ema}`],
-    ["進場價", e.entry_price],
-    ["報酬 30m / 1h / 6h / 24h / 3d", ["30m", "1h", "6h", "24h", "3d"].map((h) => pct(e[`fwd_ret_${h}`])).join(" / ")],
-    ["MAE / MFE", `${pct(e.mae_24h)} / ${pct(e.mfe_24h)}（MAE 先發生：${e.mae_before_mfe}，${e.bars_to_mfe ?? "-"} 根到 MFE）`],
-    ["24h 再創新高", e.new_high_24h],
-    ["做空淨報酬 24h", pct(e.short_pnl_net_24h, 2)],
-  ];
-  const name = chartName(e);
-  $("#ev-detail").innerHTML = `<dl>${fields.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
-    <div class="row" style="margin-top:10px"><button id="ev-to-kl" class="primary">在 K 線檢視開啟</button></div>
-    ${chartFiles.has(name) ? `<img src="/charts/${encodeURIComponent(name)}" alt="">` : '<p class="muted">此事件沒有圖（回測時勾選「產生事件圖」，僅 pump_red）</p>'}`;
-  $("#ev-to-kl").addEventListener("click", () => openKline(e.inst_id, e.event_ts - 6 * 3600e3, e.event_ts + 48 * 3600e3));
+    { t: "BTC", k: "btc_regime", f: (e) => REGIME_LABEL[e.btc_regime] || e.btc_regime || "-" },
+    { t: "之後 1h", k: "fwd_ret_1h", f: (e) => pctC(e.fwd_ret_1h) },
+    { t: "之後 24h", k: "fwd_ret_24h", f: (e) => pctC(e.fwd_ret_24h) },
+    { t: "最大反向", k: "mae_24h", f: (e) => pct(e.mae_24h) },
+    { t: "再創新高", k: "new_high_24h", f: (e) => (e.new_high_24h == null ? "-" : e.new_high_24h ? "是" : "否") },
+  ], r.events, { sortable: true, onClick: (e) => labAnalyze(e.inst_id, e.event_ts, true) });
 }
 
 /* ---------------- kline ---------------- */
@@ -2000,6 +1930,8 @@ function labMarkFromChart() {
 }
 
 async function labRecent(refresh) {
+  if (labSrc() === "hist") { if (refresh || !$("#lab-recent tbody tr")) loadEvents(); return; }
+  $("#ev-count").textContent = "";
   const rows = await api(`/api/lab/recent?hours=24${refresh ? "&refresh=1" : ""}`).catch((e) => { toast(e.message, true); return []; });
   table($("#lab-recent"), [
     { t: "合約", k: "inst", cls: "l" }, { t: "漲幅", k: "rise", f: (r) => pctC(r.rise, 0) }, { t: "上漲", f: (r) => `${r.rise_hours.toFixed(1)}h` },
@@ -2359,21 +2291,275 @@ $("#set-close").addEventListener("click", closeSettings);
 $("#set-backdrop").addEventListener("click", closeSettings);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#set-panel").classList.contains("open")) closeSettings(); });
 
+/* ---------------- market ---------------- */
+const mkState = { days: 7, data: null, kind: null, trader: null, charts: null };
+const MK_STATE = { strong: '<span class="badge ok">BTC 強</span>', neutral: '<span class="badge dim">BTC 中性</span>', weak: '<span class="badge bad">BTC 弱</span>' };
+document.querySelectorAll("#mk-days button").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("#mk-days button").forEach((x) => x.classList.toggle("on", x === b));
+  mkState.days = +b.dataset.d;
+  loadMarket();
+}));
+$("#mk-expo-kind").addEventListener("change", () => mkExpo());
+$("#mk-tr-idle").addEventListener("change", () => mkTraderList());
+
+function mkCharts() {
+  if (mkState.charts) return mkState.charts;
+  const base = {
+    layout: { background: { color: "#171d24" }, textColor: "#d6dde4" },
+    grid: { vertLines: { color: "#222b35" }, horzLines: { color: "#222b35" } },
+    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#2a323c" },
+    rightPriceScale: { borderColor: "#2a323c", minimumWidth: 70 },
+    crosshair: { mode: 0 },
+    handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { mouseWheel: false, pinch: true, axisPressedMouseMove: true },
+  };
+  const pf = { type: "custom", formatter: (x) => `${(x * 100).toFixed(1)}%`, minMove: 0.0001 };
+  const cnt = { type: "custom", formatter: (x) => Math.abs(x).toFixed(0), minMove: 1 };   // shorts are drawn below zero
+  const p = LightweightCharts.createChart($("#mk-chart"), base);
+  const b = LightweightCharts.createChart($("#mk-breadth"), base);
+  const e = LightweightCharts.createChart($("#mk-expo"), base);
+  const c = {
+    p, b, e,
+    btc: p.addLineSeries({ color: "#f57c00", lineWidth: 2, title: "BTC", priceFormat: pf }),
+    eth: p.addLineSeries({ color: "#ab47bc", lineWidth: 1, title: "ETH", priceFormat: pf }),
+    alt: p.addLineSeries({ color: "#4aa3ff", lineWidth: 2, title: "山寨", priceFormat: pf }),
+    br: b.addLineSeries({ color: "#d6dde4", lineWidth: 1, priceFormat: pf }),
+    lg: e.addHistogramSeries({ color: "rgba(38,166,154,.8)", priceFormat: cnt, title: "多" }),
+    sh: e.addHistogramSeries({ color: "rgba(239,83,80,.8)", priceFormat: cnt, title: "空" }),
+  };
+  c.br.createPriceLine({ price: 0.5, color: "#55606c", lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+  let syncing = false;
+  // all three series share the same hourly grid (gaps are whitespace points), so logical ranges line up
+  [p, b, e].forEach((ch) => ch.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+    if (syncing || !r) return;
+    syncing = true;
+    [p, b, e].forEach((o) => { if (o !== ch) o.timeScale().setVisibleLogicalRange(r); });
+    syncing = false;
+  }));
+  mkState.charts = c;
+  return c;
+}
+function mkResize() {
+  const c = mkState.charts;
+  if (!c || currentTab !== "mk") return;
+  [[c.p, "#mk-chart"], [c.b, "#mk-breadth"], [c.e, "#mk-expo"]].forEach(([ch, s]) => { const el = $(s); ch.resize(el.clientWidth, el.clientHeight); });
+}
+window.addEventListener("resize", mkResize);
+
+async function loadMarket() {
+  const days = mkState.days;
+  let d;
+  try { d = await api(`/api/market?days=${days}`); } catch (e) { $("#mk-meta").innerHTML = `<span class="neg">${esc(e.message)}</span>`; return; }
+  if (days !== mkState.days || currentTab !== "mk") return;
+  if (d.empty) { $("#mk-meta").textContent = "還沒有 K 線資料"; return; }
+  const first = !mkState.data || mkState.data.days !== d.days;
+  mkState.data = d;
+  $("#mk-meta").innerHTML = `${utc(d.from)} ～ ${utc(d.to)} UTC · 更新於 ${ago(d.ts)}${d.stale ? ' <span class="badge warn">同步中，資料庫忙碌，先顯示上一份</span>' : ""}`;
+  mkCards(d);
+  mkNote(d);
+  mkPlot(d, first);
+  mkDeriv(d.derivs || {});
+  mkDist(d.dist || []);
+  mkTraders();
+  mkMovers(d.movers || {});
+}
+
+function mkCards(d) {
+  const n = d.now;
+  const coin = (name, x) => (x ? [name, Number(x.px).toLocaleString(undefined, { maximumFractionDigits: x.px < 10 ? 4 : 2 }),
+    `1h ${pctC(x.r1h, 2)} · 4h ${pctC(x.r4h, 1)} · 24h ${pctC(x.r24h, 1)} · 7d ${pctC(x.r168h, 1)}`] : [name, "-", ""]);
+  const st = n.streak || {};
+  const streak = st.down_days ? `<span class="neg">連跌 ${st.down_days} 天</span>` : st.up_days ? `<span class="pos">連漲 ${st.up_days} 天</span>` : "-";
+  const real = ((d.traders || {}).rows || []).filter((r) => r.kind !== "random");
+  const sum = (k) => real.reduce((a, r) => a + (r[k] || 0), 0);
+  const cards = [
+    coin("BTC", n.btc), coin("ETH", n.eth),
+    ["山寨中位數 24h", pctC(n.alt_r24, 1), `7 天 ${pctC(n.alt_r7d, 1)}；${fmtN(n.n_alts)} 個上市滿 30 天的山寨幣`],
+    ["市場廣度 24h", pct(n.breadth24, 0), `${fmtN(n.n_coins)} 個幣裡，比 24 小時前高的比例`],
+    ["山寨指數（每日）", streak, st.day ? `到 ${esc(st.day)}，當天 ${pctC(st.last_ret, 1)}` : ""],
+    ["虛擬交易員現在", `<span class="pos">多 ${fmtN(sum("now_long"))}</span> / <span class="neg">空 ${fmtN(sum("now_short"))}</span>`,
+      `不含隨機對照；這段期間開了 ${fmtN(sum("open_long") + sum("open_short"))} 筆`],
+  ];
+  $("#mk-cards").innerHTML = cards.map(([k, v, s], i) => `<div class="card"><div class="k">${k}${i === 0 && n.btc_state ? ` ${MK_STATE[n.btc_state]}` : ""}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join("");
+}
+
+function mkNote(d) {
+  const st = d.now.streak || {};
+  const days = (st.days || []).map((x) => `<span class="${x.ret > 0 ? "up" : x.ret < 0 ? "dn" : ""}" title="${esc(x.day)}">${esc(x.day.slice(5))} ${pct(x.ret, 1)}</span>`).join("");
+  const res = (d.research || []).map((r) => {
+    const dn = r.side === "down";
+    return `<li>${esc(r.period)}（${esc((r.range || []).join("～"))}）連${dn ? "跌" : "漲"} ${r.k} 天以上共 ${r.n} 次：隔天${dn ? "續跌" : "續漲"} ${pct(r.p_same, 0)}（平常 ${pct(r.p_base, 0)}），之後 1 天平均 ${pctC(r.next1, 1)}、3 天 ${pctC(r.next3, 1)}</li>`;
+  }).join("");
+  $("#mk-note").innerHTML = `<div class="muted">山寨指數每日漲跌（UTC 日，定義同「更多研究 → 大盤連漲連跌」）</div><div class="mk-days">${days || '<span class="muted">（資料不足）</span>'}</div>` +
+    (res ? `<div class="muted">研究對照（僅供參考，不是訊號；指數用對數報酬，數字是近似百分比）：</div><ul class="muted">${res}</ul>` : "");
+}
+
+function mkPlot(d, fit) {
+  const c = mkCharts();
+  const h = d.hourly;
+  const ser = (arr) => h.t.map((t, i) => (arr[i] == null ? { time: t } : { time: t, value: arr[i] }));
+  c.btc.setData(ser(h.btc));
+  c.eth.setData(ser(h.eth));
+  c.alt.setData(ser(h.alt));
+  c.br.setData(ser(h.breadth));
+  const kinds = Object.keys((d.traders || {}).kinds || {});
+  const sel = $("#mk-expo-kind");
+  const cur = sel.value || "_real";
+  sel.innerHTML = `<option value="_real">全部（不含隨機）</option><option value="_all">全部（含隨機）</option>` +
+    kinds.map((k) => `<option value="${esc(k)}">${esc(KIND[k] || k)}</option>`).join("");
+  sel.value = [...sel.options].some((o) => o.value === cur) ? cur : "_real";
+  mkExpo();
+  mkResize();
+  if (fit) [c.p, c.b, c.e].forEach((ch) => ch.timeScale().fitContent());
+}
+
+function mkExpo() {
+  const d = mkState.data, c = mkState.charts;
+  if (!d || !c) return;
+  const tr = d.traders || {};
+  const t = tr.t || [];
+  const v = $("#mk-expo-kind").value;
+  const ks = Object.entries(tr.kinds || {}).filter(([k]) => (v === "_all" ? true : v === "_real" ? k !== "random" : k === v));
+  const add = (side) => t.map((_, i) => ks.reduce((a, [, x]) => a + (x[side][i] || 0), 0));
+  const L = add("long"), S = add("short");
+  c.lg.setData(t.map((x, i) => ({ time: x, value: L[i] })));
+  c.sh.setData(t.map((x, i) => ({ time: x, value: -S[i] })));
+}
+
+function mkDeriv(x) {
+  const liq = x.liq || {};
+  const usd = (v) => (v == null ? "-" : `${(v / 1e6).toFixed(1)}M U`);
+  const L = liq.long || {}, S = liq.short || {};
+  const items = [
+    ["資金費率中位數", x.funding_med == null ? "-" : `${pctC(x.funding_med, 4)}（每期）；負費率 ${fmtN(x.funding_neg)} / ${fmtN(x.n_funding)} 個，≥ 0.1% ${fmtN(x.funding_hi)} 個，≤ -0.1% ${fmtN(x.funding_lo)} 個`],
+    ["OI 24h 變化中位數", pctC(x.oi_chg_med, 1)],
+    ["6h 主動買／賣中位數", x.taker_med == null ? "-" : `${num(x.taker_med, 2)}${x.taker_med < 1 ? '　<span class="muted">賣方較多</span>' : ""}`],
+    ["多空帳戶比中位數", num(x.ls_med, 2)],
+    ["合約溢價中位數", pctC(x.premium_med, 3)],
+    [`過熱分數 ≥ ${x.threshold ?? "-"}`, x.hot == null ? "-" : `${fmtN(x.hot)} 個`],
+    ["24h 爆倉", `<span class="neg">多單 ${usd(L.usd)}</span>（${fmtN(L.n)} 筆，${fmtN(L.coins)} 個幣）、<span class="pos">空單 ${usd(S.usd)}</span>（${fmtN(S.n)} 筆，${fmtN(S.coins)} 個幣）`],
+  ];
+  $("#mk-deriv-meta").textContent = x.snap_ts ? `過熱快照 ${ago(x.snap_ts)}，${fmtN(x.n)} 個幣` : "沒有過熱快照";
+  $("#mk-deriv").innerHTML = `<dl class="mk-kv">${items.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    <p class="muted">爆倉每個幣只抓得到最新約 100 筆，熱門幣會漏掉，數字是下限。</p>`;
+}
+
+function mkDist(xs) {
+  const edges = [-Infinity, -0.2, -0.1, -0.05, -0.02, 0, 0.02, 0.05, 0.1, 0.2, Infinity];
+  const lab = (a, b) => (a === -Infinity ? `< ${pct(b, 0)}` : b === Infinity ? `≥ ${pct(a, 0)}` : `${pct(a, 0)} ～ ${pct(b, 0)}`);
+  const bins = edges.slice(0, -1).map((a, i) => ({ a, b: edges[i + 1], n: xs.filter((x) => x != null && x >= a && x < edges[i + 1]).length }));
+  const mx = Math.max(1, ...bins.map((x) => x.n));
+  $("#mk-dist-meta").textContent = `${xs.length} 個幣，上漲 ${xs.filter((x) => x > 0).length}、下跌 ${xs.filter((x) => x < 0).length}`;
+  $("#mk-dist").innerHTML = bins.slice().reverse().map((x) =>
+    `<span class="muted">${lab(x.a, x.b)}</span><div><div class="bar ${x.a >= 0 ? "up" : "dn"}" style="width:${(x.n / mx) * 100}%"></div></div><span>${x.n}</span>`).join("");
+}
+
+function mkAgg(rows) {
+  const s = (k) => rows.reduce((a, r) => a + (r[k] || 0), 0);
+  const w = (k, nk) => { const c = s(nk); return c ? rows.reduce((a, r) => a + (r[nk] ? r[k] * r[nk] : 0), 0) / c : null; };
+  return { traders: rows.length, active: rows.filter((r) => r.open_long + r.open_short + r.now_long + r.now_short + r.n > 0).length,
+    open_long: s("open_long"), open_short: s("open_short"), now_long: s("now_long"), now_short: s("now_short"),
+    n: s("n"), mean: w("mean", "n"), win: w("win", "n"), n_up: s("n_up"), mean_up: w("mean_up", "n_up"), n_dn: s("n_dn"), mean_dn: w("mean_dn", "n_dn") };
+}
+const mkSideCols = [
+  { t: "開多", k: "open_long", f: (r) => (r.open_long ? `<span class="pos">${fmtN(r.open_long)}</span>` : '<span class="muted">0</span>') },
+  { t: "開空", k: "open_short", f: (r) => (r.open_short ? `<span class="neg">${fmtN(r.open_short)}</span>` : '<span class="muted">0</span>') },
+  { t: "現在 多／空", k: "now_long", f: (r) => `${fmtN(r.now_long)} / ${fmtN(r.now_short)}` },
+];
+const mkRetCols = [
+  { t: "平倉", k: "n", f: (r) => fmtN(r.n) },
+  { t: "每筆平均", k: "mean", f: (r) => pctC(r.mean, 2) },
+  { t: "勝率", k: "win", f: (r) => pct(r.win, 0) },
+  { t: "大盤漲時進場", k: "mean_up", f: (r) => (r.n_up ? `${pctC(r.mean_up, 2)} <span class="muted">(${r.n_up})</span>` : "-") },
+  { t: "大盤跌時進場", k: "mean_dn", f: (r) => (r.n_dn ? `${pctC(r.mean_dn, 2)} <span class="muted">(${r.n_dn})</span>` : "-") },
+];
+
+function mkTraders() {
+  const rows = (mkState.data.traders || {}).rows || [];
+  const by = {};
+  rows.forEach((r) => (by[r.kind] = by[r.kind] || []).push(r));
+  const kinds = Object.entries(by).map(([k, rs]) => ({ kind: k, ...mkAgg(rs) }))
+    .sort((a, b) => (a.kind === "random") - (b.kind === "random") || b.n - a.n);
+  table($("#mk-kinds"), [
+    { t: "類型", k: "kind", cls: "l", f: (r) => `${esc(KIND[r.kind] || r.kind)}${r.kind === "random" ? ' <span class="muted">（基準）</span>' : ""}` },
+    { t: "有動作／交易員", k: "active", f: (r) => `${r.active} / ${r.traders}` },
+    ...mkSideCols, ...mkRetCols,
+  ], kinds, { sortable: true, onClick: (r) => { mkState.kind = mkState.kind === r.kind ? null : r.kind; mkTraderList(); } });
+  mkTraderList();
+}
+
+function mkTraderList() {
+  if (!mkState.data) return;
+  const idle = $("#mk-tr-idle").checked;
+  const k = mkState.kind;
+  const rows = ((mkState.data.traders || {}).rows || [])
+    .filter((r) => (!k || r.kind === k) && (idle || r.open_long + r.open_short + r.now_long + r.now_short + r.n > 0))
+    .sort((a, b) => b.n - a.n || (b.open_long + b.open_short) - (a.open_long + a.open_short));
+  if (!k) document.querySelectorAll("#mk-kinds tr.sel").forEach((x) => x.classList.remove("sel"));
+  $("#mk-tr-title").firstChild.textContent = k ? `${KIND[k] || k}的交易員 ` : "各交易員 ";
+  table($("#mk-tr"), [
+    { t: "交易員", k: "trader_id", cls: "l", f: (r) => `<span title="${esc(r.label)}">${esc(r.trader_id)}</span>` },
+    { t: "類型", k: "kind", f: (r) => esc(KIND[r.kind] || r.kind) },
+    ...mkSideCols,
+    { t: "幣數", k: "coins", f: (r) => fmtN(r.coins) },
+    ...mkRetCols,
+    { t: "累計", k: "sum", f: (r) => pctC(r.sum, 1) },
+  ], rows, { sortable: true, onClick: (r) => mkTraderPos(r) });
+}
+
+async function mkTraderPos(r) {
+  mkState.trader = r.trader_id;
+  $("#mk-tr-pos-box").style.display = "";
+  $("#mk-tr-pos-title").innerHTML = `${esc(r.trader_id)} <small class="muted">${esc(r.label)}；點一筆打開 K 線</small>`;
+  const xs = await api(`/api/market/positions?trader=${encodeURIComponent(r.trader_id)}&days=${mkState.days}`).catch((e) => { toast(e.message, true); return []; });
+  if (mkState.trader !== r.trader_id) return;
+  const P = (v) => (v == null ? "-" : Number(v).toPrecision(5));
+  table($("#mk-tr-pos"), [
+    { t: "合約", k: "inst_id", cls: "l" },
+    { t: "方向", k: "side", f: (x) => `<span class="${x.side === "short" ? "neg" : "pos"}">${SIDE[x.side] || esc(x.side)}</span>` },
+    { t: "進場", k: "entry_ts", f: (x) => utc(x.entry_ts) },
+    { t: "進場價", f: (x) => P(x.entry_px) },
+    { t: "出場", k: "exit_ts", f: (x) => (x.exit_ts ? utc(x.exit_ts) : '<span class="badge ok">持有中</span>') },
+    { t: "原因", f: (x) => esc(EXIT_WHY[x.exit_reason] || x.exit_reason || "") },
+    { t: "淨報酬", k: "ret_net", f: (x) => pctC(x.ret_net, 2) },
+    { t: "最大反向", k: "mae", f: (x) => pct(x.mae, 1) },
+    { t: "理由", cls: "l", f: (x) => `<span class="muted">${esc((x.reason || "").slice(0, 80))}</span>` },
+  ], xs, { sortable: true, onClick: (x) => {
+    const t0 = x.entry_ts, t1 = x.exit_ts || Date.now(), up = x.side !== "short";
+    const marks = [{ inst: x.inst_id, time: Math.floor(t0 / 300000) * 300, position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown", color: "#4aa3ff", text: r.trader_id }];
+    if (x.exit_ts) marks.push({ inst: x.inst_id, time: Math.floor(x.exit_ts / 300000) * 300, position: up ? "aboveBar" : "belowBar", shape: "circle", color: x.ret_net >= 0 ? "#26a69a" : "#ef5350", text: `${EXIT_WHY[x.exit_reason] || x.exit_reason} ${pct(x.ret_net, 1)}` });
+    openKline(x.inst_id, t0 - 6 * 3600e3, t1 + 3 * 3600e3, marks);
+  } });
+}
+
+function mkMovers(m) {
+  const cols = (surge) => [
+    { t: "合約", k: "inst_id", cls: "l", f: (x) => esc(x.inst_id.replace("-USDT-SWAP", "")) },
+    { t: "24h", k: "r24", f: (x) => pctC(x.r24, 1) },
+    ...(surge ? [{ t: "倍數", k: "surge", f: (x) => `${num(x.surge, 1)}×` }] : []),
+    { t: "成交額", k: "vq24", f: (x) => `${(x.vq24 / 1e6).toFixed(1)}M` },
+  ];
+  const open = (x) => openKline(x.inst_id, Date.now() - 2 * 86400e3, Date.now());
+  table($("#mk-up"), cols(false), m.up || [], { onClick: open });
+  table($("#mk-down"), cols(false), m.down || [], { onClick: open });
+  table($("#mk-surge"), cols(true), m.surge || [], { onClick: open });
+}
+
 /* ---------------- polling ---------------- */
 setInterval(() => {
   if (document.hidden) return;
   if (currentTab === "dash") loadDash();
+  if (currentTab === "mk" && Date.now() % 60000 < 15000) loadMarket();
   if (currentTab === "ac") loadPositions();
   if (currentTab === "pp" && ppSrc() === "live") loadPaper();
   if (currentTab === "ht") loadHeat();
   if (currentTab === "dc" && Date.now() % 300000 < 15000) loadScan();
   if (currentTab === "lab") { labRules(); if (Date.now() % 300000 < 15000) labRecent(); }
-  if (currentTab === "ctrl" && $("#log-follow").checked) { loadLog(); loadTaskBox(); }
 }, 15000);
 setInterval(() => {
   if (document.hidden) return;
-  if (currentTab === "ctrl" && $("#log-follow").checked) loadLog();
-  if (currentTab === "bt") pollJob();
+  if (currentTab === "dash" && $("#log-follow").checked) loadLog();
+  if (currentTab === "lab" && labSrc() === "hist") pollJob();
   if (currentTab === "ac") pollAcctJob();
   if (currentTab === "dc") pollDiscJob();
   if (currentTab === "pp") pollPaperJobs();
@@ -2558,7 +2744,7 @@ async function loadCampaignResults() {
 }
 
 /* ---------------- more research (更多研究) ---------------- */
-const RS_NAMES = { regime: "大盤連漲連跌", xsec: "橫斷面動能／反轉", flow: "主動買賣與溢價背離", listings: "上幣／下架公告", exit_lab: "人性化出場", margin: "全倉／逐倉與安全槓桿" };
+const RS_NAMES = { regime: "大盤連漲連跌", xsec: "橫斷面動能／反轉", flow: "主動買賣與溢價背離", listings: "上幣／下架公告", exit_lab: "人性化出場", margin: "全倉／逐倉與安全槓桿", pool: "共用資金池", earn: "賺幣利率" };
 const RS_VERD = { "可用": "ok", "觀察中": "warn", "無效": "bad", "資料不足": "dim" };
 let rsJobRunning = false;
 const rsPct = (v, d = 2) => (v == null ? "-" : pctC(Math.expm1(v), d));
@@ -2588,7 +2774,7 @@ async function loadResearch() {
     meta.textContent = `產生於 ${r.generated_at}（${r.elapsed_sec ?? "-"} 秒）`;
     const cav = (r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("");
     $(`#rs-${name}-cav`).innerHTML = cav;
-    ({ regime: rsRegime, xsec: rsXsec, flow: rsFlow, listings: rsListings, exit_lab: rsExits, margin: rsMargin })[name](r, d);
+    ({ regime: rsRegime, xsec: rsXsec, flow: rsFlow, listings: rsListings, exit_lab: rsExits, margin: rsMargin, pool: rsPool, earn: rsEarn })[name](r, d);
   }
 }
 
@@ -2697,9 +2883,240 @@ function rsMargin(r) {
 }
 ["#rs-margin-src", "#rs-margin-lev"].forEach((s) => $(s).addEventListener("change", () => api("/api/research/margin").then((d) => d.result && rsMargin(d.result)).catch(() => {})));
 
+let rsPoolChart = null;
+function rsPool(r) {
+  const s = (r.sources || {})[$("#rs-pool-src").value];
+  if (!s || !s.runs.length) {
+    $("#rs-pool-verdict").innerHTML = '<span class="muted">這個來源沒有足夠的資料（回看期間比資料還長）</span>';
+    ["#rs-pool-cmp", "#rs-pool-grid", "#rs-pool-mem", "#rs-pool-picks"].forEach((x) => { $(x).innerHTML = ""; });
+    $("#rs-pool-range").textContent = s ? `${s.range.join(" ～ ")}，${s.candidates} 個候選交易員` : "";
+    return;
+  }
+  const m = s.runs.find((x) => x.main) || s.runs.find((x) => x.k === r.params.main.k) || s.runs[0];
+  const rm = m.random_members;
+  $("#rs-pool-range").textContent = `${s.range.join(" ～ ")}，${s.candidates} 個候選交易員；${m.main ? "主要設定" : "沒有主要設定的樣本，改看"}：每 ${r.params.step_d} 天重選、回看 ${m.look} 天、前 ${m.k} 名，從 ${m.start} 開始`;
+  const beat = rm.beat;
+  const verdict = m.ret <= 0 ? '<span class="badge bad">資金池虧錢</span>'
+    : beat >= 0.95 ? '<span class="badge ok">贏過 95% 以上的隨機成員組</span>'
+      : '<span class="badge warn">有賺，但沒有明顯贏過隨機挑成員</span>';
+  $("#rs-pool-verdict").innerHTML = `<p>${verdict}　報酬 ${rsRaw(m.ret, 1)}、最大回撤 ${pct(m.max_dd, 1)}；隨機挑成員 ${rm.sims} 次的中位數 ${rsRaw(rm.p50, 1)}（5%～95%：${pct(rm.p05, 1)} ～ ${pct(rm.p95, 1)}），資金池贏過其中 ${pct(beat, 0)}。` +
+    `所有 ${s.runs.length} 組設定裡 ${s.runs.filter((x) => x.ret > 0).length} 組賺錢、${s.runs.filter((x) => x.random_members.beat >= 0.95).length} 組贏過 95% 的隨機成員組。</p>`;
+  const row = (name, x, note) => (x ? { name, note: note || "", ...x } : null);
+  const rows = [row("資金池（主要設定）", m), row("同上，不加煞車", m.no_brakes), row("全部候選一起進池", m.all, "不挑選"), row("隨機進場交易員", m.random_entries, "隨機對照當成員")].filter(Boolean);
+  const sk = (x) => x.skipped || {};
+  table($("#rs-pool-cmp"), [
+    { t: "", cls: "l", f: (x) => `${esc(x.name)}${x.note ? ` <span class="muted">${esc(x.note)}</span>` : ""}` },
+    { t: "報酬", f: (x) => rsRaw(x.ret, 1) }, { t: "最大回撤", f: (x) => pct(x.max_dd, 1) },
+    { t: "最長水下", f: (x) => `${x.underwater_days} 天` }, { t: "最差一週", f: (x) => rsRaw(x.worst_week, 1) }, { t: "最差 30 天", f: (x) => rsRaw(x.worst_30d, 1) },
+    { t: "賺錢的週", f: (x) => (x.pos_weeks == null ? "-" : `${pct(x.pos_weeks, 0)} <span class="muted">/ ${x.weeks}</span>`) },
+    { t: "前半／後半", f: (x) => (x.halves ? `${rsRaw(x.halves[0], 1)} / ${rsRaw(x.halves[1], 1)}` : "-") },
+    { t: "成交／訊號", f: (x) => `${fmtN(x.trades)} / ${fmtN(x.signals)}` },
+    { t: "被擋", f: (x) => `<span class="muted" title="額度 ${sk(x).cap}、同幣 ${sk(x).same_coin}、單一成員上限 ${sk(x).member_cap}、煞車 ${sk(x).brake}、沒價格 ${sk(x).no_price}">額度 ${fmtN(sk(x).cap)}・同幣 ${fmtN(sk(x).same_coin)}・煞車 ${fmtN(sk(x).brake)}</span>` },
+    { t: "停機", f: (x) => `${x.halts} 次` },
+  ], rows);
+  const base = { layout: { background: { color: "#171d24" }, textColor: "#d6dde4" }, grid: { vertLines: { color: "#222b35" }, horzLines: { color: "#222b35" } },
+    timeScale: { borderColor: "#2a323c" }, rightPriceScale: { borderColor: "#2a323c" }, handleScroll: { mouseWheel: false }, handleScale: { mouseWheel: false } };
+  if (!rsPoolChart) {
+    rsPoolChart = LightweightCharts.createChart($("#rs-pool-chart"), base);
+    rsPoolChart.series = [["資金池", "#4aa3ff", 2], ["全部候選", "#8592a0", 1], ["隨機進場", "#ef5350", 1]]
+      .map(([title, color, lineWidth]) => rsPoolChart.addLineSeries({ title, color, lineWidth, priceFormat: { type: "custom", formatter: (v) => fmtN(Math.round(v)), minMove: 1 } }));
+  }
+  rsPoolChart.resize($("#rs-pool-chart").clientWidth, 260);
+  [m.curve, (m.all || {}).curve, (m.random_entries || {}).curve].forEach((c, i) => rsPoolChart.series[i].setData(c ? c.t.map((t, j) => ({ time: t, value: c.v[j] })) : []));
+  rsPoolChart.timeScale().fitContent();
+  table($("#rs-pool-grid"), [
+    { t: "回看", k: "look", f: (x) => `${x.look} 天${x.main ? ' <span class="badge ok">主要</span>' : ""}` }, { t: "前 K 名", k: "k" },
+    { t: "報酬", k: "ret", f: (x) => rsRaw(x.ret, 1) }, { t: "最大回撤", k: "max_dd", f: (x) => pct(x.max_dd, 1) },
+    { t: "成交", k: "trades", f: (x) => fmtN(x.trades) }, { t: "沒人入選的週", f: (x) => `${x.empty_steps} / ${x.steps}` },
+    { t: "隨機成員中位數", f: (x) => rsRaw(x.random_members.p50, 1) },
+    { t: "贏過隨機", k: "beat", f: (x) => { const b = x.random_members.beat; return b >= 0.95 ? `<b class="pos">${pct(b, 0)}</b>` : pct(b, 0); } },
+  ], s.runs.map((x) => ({ ...x, beat: x.random_members.beat })), { sortable: true });
+  table($("#rs-pool-mem"), [
+    { t: "成員", cls: "l", f: (x) => `<span class="tid">${esc(x.trader_id)}</span>` }, { t: "損益", f: (x) => `<span class="${x.pnl < 0 ? "neg" : "pos"}">${fmtN(Math.round(x.pnl))}</span>` },
+  ], m.by_member || []);
+  table($("#rs-pool-picks"), [
+    { t: "重選日", k: "t" },
+    { t: "成員", cls: "l", f: (x) => (x.members.length ? x.members.map((y) => `${esc(y.trader_id)} <span class="muted">(${num(y.t, 1)})</span>`).join("、") : '<span class="muted">沒有人過關，這週不進場</span>') },
+  ], (m.picks || []).slice().reverse());
+  const p = r.params;
+  $("#rs-pool-rules").innerHTML = `規則：權益 ${fmtN(p.eq0)} U；每筆碰到止損虧權益 ${pct(p.risk, 0)}（部位 = 權益 × ${pct(p.risk, 0)} ÷ 止損，最多 ${pct(p.max_pos_frac, 0)}），止損最多 ${pct(p.stop, 0)}；` +
+    `總部位 ≤ 權益 × ${p.gross}（不開槓桿），單邊 ≤ ${pct(p.side_cap, 0)}；最多 ${p.max_open} 筆、每個成員 ${p.max_per_member} 筆，同幣同方向只拿一筆。` +
+    `煞車：回撤 ${pct(p.dd_half, 0)} 減半、${pct(p.dd_halt, 0)} 停止開倉 ${p.halt_d} 天；單日虧 ${pct(p.day_loss, 0)} 當天停止開倉。` +
+    `成員：t ≥ ${p.t_min}、每筆平均為正、扣同方向隨機後的 t 值排名，同一家族（規則與其止損版、反指標、LLM 版）只取一個。`;
+  rsPoolMl(r.model);
+}
+
+const ML_FEAT = {
+  tr_t: "交易員近 30 天 t 值", tr_ex: "交易員近 30 天超額", tr_mean: "交易員近 30 天每筆平均", tr_n: "交易員近 30 天筆數",
+  family: "交易員家族", kind: "交易員類型", exit_rule: "出場規則", hold_h: "持有時間", stop: "止損距離", sgn: "做多／做空",
+  alt24: "山寨中位數 24h", alt7d: "山寨中位數 7 天", streak: "大盤連漲／連跌天數", r1h: "1h 漲跌", r6h: "6h 漲跌", r24h: "24h 漲跌", r3d: "3 天漲跌",
+  vol_ratio: "量比", vmax_1h: "1h 最大量倍數", pos24: "24h 區間位置", pos7d: "7 天區間位置", dist_ema: "離均線", vol_rank: "量排名", atr: "ATR",
+  btc_r1h: "BTC 1h", btc_r4h: "BTC 4h", btc_regime: "BTC 狀態", breadth: "上漲家數比", age_d: "上市天數", funding: "資金費率", oi_chg: "OI 變化", log_turnover: "成交額",
+};
+let rsPoolMlChart = null;
+function rsPoolMl(ml) {
+  const b = ml && ml.blind;
+  ["#rs-pool-ml-cmp", "#rs-pool-ml-months", "#rs-pool-ml-imp", "#rs-pool-ml-live", "#rs-pool-ml-cav"].forEach((x) => { $(x).innerHTML = ""; });
+  if (!b || !b.runs) {
+    $("#rs-pool-ml-meta").textContent = "";
+    $("#rs-pool-ml-verdict").innerHTML = '<p class="muted">還沒跑：按上面的「重跑」（會一起跑模型篩選）</p>';
+    $("#rs-pool-ml-chart").style.display = "none";
+    return;
+  }
+  const p = ml.params, f = String(p.main_f), mm = b.runs.model[f], pm = b.runs.pool_main, rs = b.random_same;
+  $("#rs-pool-ml-meta").textContent = `（${ml.generated_at}；2024-25 盲測，從 ${b.oos_start} 開始逐月樣本外）`;
+  const trShare = b.importance.filter((x) => x.feature.startsWith("tr_")).reduce((a, x) => a + x.gain, 0);
+  const verdict = mm.ret <= 0 ? '<span class="badge bad">模型篩選虧錢</span>'
+    : rs.beat < 0.95 ? '<span class="badge warn">沒有明顯贏過隨機挑同樣數量</span>'
+      : mm.ret > pm.ret ? '<span class="badge ok">贏過隨機，也贏過資金池主要設定</span>'
+        : '<span class="badge warn">贏過隨機，但沒贏過資金池主要設定</span>';
+  $("#rs-pool-ml-verdict").innerHTML = `<p>${verdict}　每月重訓 LightGBM，替每個候選訊號打分數，只接分數前 ${pct(p.main_f, 0)}，再丟進同一套資金池規則。` +
+    `報酬 ${rsRaw(mm.ret, 1)}、最大回撤 ${pct(mm.max_dd, 1)}；同期間資金池主要設定 ${rsRaw(pm.ret, 1)}。` +
+    `每月隨機挑同樣數量 ${rs.sims} 次：中位數 ${rsRaw(rs.p50, 1)}（5%～95%：${pct(rs.p05, 1)} ～ ${pct(rs.p95, 1)}），模型贏過其中 ${pct(rs.beat, 0)}。` +
+    `模型的判斷有 ${pct(trShare, 0)} 來自「交易員近 30 天表現」。</p>`;
+  const pt = b.per_trade, row = (name, x, tr, note) => (x ? { name, note: note || "", tr, ...x } : null);
+  const rows = [row("資金池主要設定", pm, null, "同期間"), row("資金池成員 + 模型篩選", b.runs.pool_model, b.pool_model_trade && b.pool_model_trade.sel_mean),
+    ...Object.entries(b.runs.model).map(([k, x]) => row(`模型：分數前 ${pct(+k, 0)}`, x, pt[k] && pt[k].sel_mean, k === f ? "主要" : "參考")),
+    row("全部候選訊號", b.runs.all, pt[f] && pt[f].all_mean, "不挑選")].filter(Boolean);
+  table($("#rs-pool-ml-cmp"), [
+    { t: "", cls: "l", f: (x) => `${esc(x.name)}${x.note ? ` <span class="muted">${esc(x.note)}</span>` : ""}` },
+    { t: "報酬", f: (x) => rsRaw(x.ret, 1) }, { t: "最大回撤", f: (x) => pct(x.max_dd, 1) }, { t: "最長水下", f: (x) => `${x.underwater_days} 天` },
+    { t: "最差 30 天", f: (x) => rsRaw(x.worst_30d, 1) }, { t: "去掉最好一週", f: (x) => rsRaw(x.ret_ex_best_week, 1) },
+    { t: "前半／後半", f: (x) => (x.halves ? `${rsRaw(x.halves[0], 1)} / ${rsRaw(x.halves[1], 1)}` : "-") },
+    { t: "成交／訊號", f: (x) => `${fmtN(x.trades)} / ${fmtN(x.signals)}` },
+    { t: "訊號每筆平均", f: (x) => (x.tr == null ? "-" : rsRaw(x.tr, 2)) },
+  ], rows);
+  $("#rs-pool-ml-chart").style.display = "";
+  const base = { layout: { background: { color: "#171d24" }, textColor: "#d6dde4" }, grid: { vertLines: { color: "#222b35" }, horzLines: { color: "#222b35" } },
+    timeScale: { borderColor: "#2a323c" }, rightPriceScale: { borderColor: "#2a323c" }, handleScroll: { mouseWheel: false }, handleScale: { mouseWheel: false } };
+  if (!rsPoolMlChart) {
+    rsPoolMlChart = LightweightCharts.createChart($("#rs-pool-ml-chart"), base);
+    rsPoolMlChart.series = [["模型篩選", "#26a69a", 2], ["資金池主要設定", "#4aa3ff", 2], ["全部候選", "#8592a0", 1]]
+      .map(([title, color, lineWidth]) => rsPoolMlChart.addLineSeries({ title, color, lineWidth, priceFormat: { type: "custom", formatter: (v) => fmtN(Math.round(v)), minMove: 1 } }));
+  }
+  rsPoolMlChart.resize($("#rs-pool-ml-chart").clientWidth, 260);
+  [mm.curve, pm.curve, b.runs.all.curve].forEach((c, i) => rsPoolMlChart.series[i].setData(c ? c.t.map((t, j) => ({ time: t, value: c.v[j] })) : []));
+  rsPoolMlChart.timeScale().fitContent();
+  table($("#rs-pool-ml-months"), [
+    { t: "月份", k: "month" }, { t: "AUC", f: (x) => num(x.auc, 3) }, { t: "保留期 AUC", f: (x) => num(x.hold_auc, 3) },
+    { t: "全部每筆", f: (x) => rsRaw(x.all_mean, 2) }, { t: "選中每筆", f: (x) => rsRaw(x.sel_mean, 2) },
+    { t: "選中／全部", f: (x) => `${fmtN(x.n_sel)} / ${fmtN(x.n)}` },
+  ], b.months.slice().reverse());
+  table($("#rs-pool-ml-imp"), [
+    { t: "特徵", cls: "l", f: (x) => `${esc(ML_FEAT[x.feature] || x.feature)} <span class="muted">${esc(x.feature)}</span>` },
+    { t: "占比", f: (x) => pct(x.gain, 1) },
+  ], b.importance.slice(0, 12));
+  const lv = ml.live;
+  if (lv) {
+    const lp = lv.per_trade, lr = lv.runs;
+    $("#rs-pool-ml-live").innerHTML = `<p><b>套到即時紙上交易</b>（${lv.range.join(" ～ ")}，用整段盲測訓練的模型，沒重訓）：AUC ${num(lv.auc, 3)}；` +
+      `選中 ${fmtN(lp.n_sel)} 筆每筆 ${rsRaw(lp.sel_mean, 2)}，全部 ${fmtN(lp.n_all)} 筆每筆 ${rsRaw(lp.all_mean, 2)}；` +
+      `資金池報酬：模型 ${rsRaw(lr.model.ret, 1)}、全部 ${rsRaw(lr.all.ret, 1)}、隨機同數量中位數 ${rsRaw(lv.random_same.p50, 1)}（贏過 ${pct(lv.random_same.beat, 0)}）。` +
+      `<span class="muted">${pct(lv.unseen_share, 0)} 的訊號來自盲測裡沒有的交易員家族；即時期間很短，只能當參考。</span></p>`;
+  }
+  $("#rs-pool-ml-cav").innerHTML = (ml.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("");
+}
+let rsEarnChart = null, rsEarnShChart = null;
+function rsEarnShort(s, p, base) {
+  if (!s || !s.runs) {
+    $("#rs-earn-sh-note").innerHTML = '<p class="muted">尚未計算（按「重跑」）</p>';
+    return;
+  }
+  const R = s.runs, w = s.window, rd = s.random, offs = s.offsets || [];
+  const rng = (k) => (offs.length ? `${rsRaw(Math.min(...offs.map((o) => o[k])), 1)} ～ ${rsRaw(Math.max(...offs.map((o) => o[k])), 1)}` : "-");
+  $("#rs-earn-sh-note").innerHTML = `<p>只做空、不算成本 ${rsRaw(R.short.ret, 1)}（最大回撤 ${pct(R.short.max_dd, 0)}），贏過隨機做空 ${p.main_n} 個幣 ${rd.sims} 次的 ${pct(rd.beat, 0)}（隨機中位數 ${rsRaw(rd.p50, 1)}）。` +
+    `付借出利率當成本 ${rsRaw(R.short_margin.ret, 1)}；一半買全部的幣放賺幣、一半做空，付成本 ${rsRaw(R.hedge_margin.ret, 1)}（最大回撤 ${pct(R.hedge_margin.max_dd, 0)}）。` +
+    (w ? `<br>有資金費率的 ${w.start} 起（${w.rebalances} 期）：這些幣的資金費率年化 ${rsRaw(w.funding_apy, 0)}（負的 = 做空要付），借出利率年化 ${pct(w.lending_apy, 0)}；` +
+      `做空不算成本 ${rsRaw(R.short_w.ret, 1)}、付資金費率 ${rsRaw(R.short_w_funding.ret, 1)}、付借出利率 ${rsRaw(R.short_w_margin.ret, 1)}，所以借出利率當成本和實際資金費率差不多。` : "") +
+    (offs.length ? `<br><b>換開始日期差很多：</b>晚 0～${offs[offs.length - 1].offset} 天開始，做空（付成本）${rng("short_margin")}，一半買一半空 ${rng("hedge_margin")}。` : "") + "</p>";
+  const NAME = { short: "做空，不算成本", short_margin: "做空，付借出利率", hedge: "一半買全部 + 賺幣、一半做空，不算成本", hedge_margin: "一半買全部 + 賺幣、一半做空，付借出利率",
+    short_w: "有資金費率期間：做空，不算成本", short_w_funding: "有資金費率期間：做空，付資金費率", short_w_margin: "有資金費率期間：做空，付借出利率" };
+  table($("#rs-earn-sh"), [
+    { t: "", cls: "l", k: "name" }, { t: "報酬", f: (x) => rsRaw(x.ret, 1) }, { t: "最大回撤", f: (x) => pct(x.max_dd, 1) },
+    { t: "賺錢的期數", f: (x) => (x.pos_periods == null ? "-" : `${pct(x.pos_periods, 0)} <span class="muted">/ ${x.periods}</span>`) },
+    { t: "最差一期", f: (x) => (x.worst_period == null ? "-" : rsRaw(x.worst_period, 1)) },
+    { t: "前半／後半", f: (x) => (x.halves ? `${rsRaw(x.halves[0], 1)} / ${rsRaw(x.halves[1], 1)}` : "-") },
+  ], Object.keys(NAME).filter((k) => R[k]).map((k) => ({ name: NAME[k], ...R[k] })));
+  table($("#rs-earn-sh-off"), [
+    { t: "晚幾天開始", f: (x) => `${x.offset} 天` }, { t: "做空，付借出利率", f: (x) => rsRaw(x.short_margin, 1) }, { t: "回撤", f: (x) => pct(x.short_margin_dd, 0) },
+    { t: "一半買一半空，付借出利率", f: (x) => rsRaw(x.hedge_margin, 1) }, { t: "回撤", f: (x) => pct(x.hedge_margin_dd, 0) },
+  ], offs);
+  if (!rsEarnShChart) {
+    rsEarnShChart = LightweightCharts.createChart($("#rs-earn-sh-chart"), base);
+    rsEarnShChart.series = [["做空", "#ef5350", 1], ["做空，付成本", "#ef5350", 2], ["一半買一半空", "#26a69a", 1], ["一半買一半空，付成本", "#26a69a", 2]]
+      .map(([title, color, lineWidth]) => rsEarnShChart.addLineSeries({ title, color, lineWidth, priceFormat: { type: "custom", formatter: (v) => `${Math.round((v - 1) * 100)}%`, minMove: 0.001 } }));
+  }
+  rsEarnShChart.resize($("#rs-earn-sh-chart").clientWidth, 260);
+  ["short", "short_margin", "hedge", "hedge_margin"].forEach((k, i) => { const c = s.curves[k]; rsEarnShChart.series[i].setData(c ? c.t.map((t, j) => ({ time: t, value: c.v[j] })) : []); });
+  rsEarnShChart.timeScale().fitContent();
+}
+function rsEarn(r) {
+  const dt = r.data;
+  $("#rs-earn-data").textContent = `${r.range.join(" ～ ")}；${r.coins_with_rates} 個有賺幣利率又有永續合約的幣` +
+    (dt ? `；資料庫 ${fmtN(dt.rows)} 筆、${dt.back_done}/${dt.currencies} 個幣已抓到 2024-09` : "");
+  const b = r.baskets, p = r.params, main = b.runs[`top${p.main_n}`], ne = b.runs.top_no_earn, al = b.runs.all, rd = b.random;
+  const verdict = main.ret <= 0 ? '<span class="badge bad">放賺幣也補不回跌幅</span>'
+    : rd.beat >= 0.95 ? '<span class="badge ok">賺錢，且贏過 95% 的隨機挑幣</span>' : '<span class="badge warn">有賺，但沒有明顯贏過隨機挑幣</span>';
+  $("#rs-earn-verdict").innerHTML = `<p>${verdict}　年化最高的 ${p.main_n} 個幣放賺幣：${rsRaw(main.ret, 1)}（最大回撤 ${pct(main.max_dd, 1)}，平均拿到年化 ${pct(main.avg_rate, 0)}）；` +
+    `同一籃不放賺幣 ${rsRaw(ne.ret, 1)}，也就是利息讓最後剩下的錢多了 ${rsRaw((1 + main.ret) / (1 + ne.ret) - 1, 1)}（${num((1 + main.ret) / (1 + ne.ret), 2)} 倍）。隨機挑 ${p.main_n} 個幣放賺幣 ${rd.sims} 次：中位數 ${rsRaw(rd.p50, 1)}，贏過其中 ${pct(rd.beat, 0)}。</p>` +
+    (b.random_exit ? `<p class="muted">年化暴衝就賣 ${rsRaw(b.runs.top_spike_exit.ret, 1)}；對照：同一籃用一樣的頻率隨機賣掉持有的幣（${b.random_exit.sims} 次），中位數 ${rsRaw(b.random_exit.p50, 1)}，` +
+      `暴衝就賣贏過其中 ${pct(b.random_exit.beat, 0)}${b.random_exit.beat >= 0.95 ? "" : "（沒到 95%，不能說暴衝就賣比較好）"}。` +
+      `${b.runs.top_campaign_exit && !b.runs.top_campaign_exit.exits ? "「公告活動就賣」一次都沒觸發：有活動公告的幣在公告時都不在籃子裡。" : ""}</p>` : "");
+  const NAME = { [`top${p.main_n}`]: [`年化最高 ${p.main_n} 個 + 賺幣`, "主要"], top_no_earn: [`年化最高 ${p.main_n} 個，不放賺幣`, ""],
+    top_spike_exit: [`同上 + 年化暴衝就賣`, "參考"], top_campaign_exit: ["同上 + OKX 公告活動就賣", "參考"], bottom: [`年化最低 ${p.main_n} 個 + 賺幣`, ""],
+    all: ["全部符合條件的幣 + 賺幣", ""], btc: ["只拿 BTC", ""] };
+  p.ns.filter((n) => n !== p.main_n).forEach((n) => { NAME[`top${n}`] = [`年化最高 ${n} 個 + 賺幣`, "參考"]; });
+  const order = [`top${p.main_n}`, "top_no_earn", "top_spike_exit", "top_campaign_exit", ...p.ns.filter((n) => n !== p.main_n).map((n) => `top${n}`), "bottom", "all", "btc"];
+  table($("#rs-earn-bk"), [
+    { t: "", cls: "l", f: (x) => `${esc(x.name)}${x.note ? ` <span class="muted">${esc(x.note)}</span>` : ""}` },
+    { t: "報酬", f: (x) => rsRaw(x.ret, 1) }, { t: "最大回撤", f: (x) => pct(x.max_dd, 1) },
+    { t: "平均年化", f: (x) => (x.avg_rate == null ? "-" : pct(x.avg_rate, 0)) },
+    { t: "賺錢的期數", f: (x) => (x.pos_periods == null ? "-" : `${pct(x.pos_periods, 0)} <span class="muted">/ ${x.periods}</span>`) },
+    { t: "最差一期", f: (x) => rsRaw(x.worst_period, 1) },
+    { t: "前半／後半", f: (x) => (x.halves ? `${rsRaw(x.halves[0], 1)} / ${rsRaw(x.halves[1], 1)}` : "-") },
+    { t: "提早賣", f: (x) => (x.exits ? `${x.exits} 次` : "-") },
+  ], order.filter((k) => b.runs[k]).map((k) => ({ name: NAME[k][0], note: NAME[k][1], ...b.runs[k] })));
+  const base = { layout: { background: { color: "#171d24" }, textColor: "#d6dde4" }, grid: { vertLines: { color: "#222b35" }, horzLines: { color: "#222b35" } },
+    timeScale: { borderColor: "#2a323c" }, rightPriceScale: { borderColor: "#2a323c" }, handleScroll: { mouseWheel: false }, handleScale: { mouseWheel: false } };
+  if (!rsEarnChart) {
+    rsEarnChart = LightweightCharts.createChart($("#rs-earn-chart"), base);
+    rsEarnChart.series = [["年化最高 + 賺幣", "#26a69a", 2], ["不放賺幣", "#4aa3ff", 1], ["全部 + 賺幣", "#8592a0", 1], ["BTC", "#f0b90b", 1]]
+      .map(([title, color, lineWidth]) => rsEarnChart.addLineSeries({ title, color, lineWidth, priceFormat: { type: "custom", formatter: (v) => `${Math.round((v - 1) * 100)}%`, minMove: 0.001 } }));
+  }
+  rsEarnChart.resize($("#rs-earn-chart").clientWidth, 260);
+  [b.curves[`top${p.main_n}`], b.curves.top_no_earn, b.curves.all, b.curves.btc].forEach((c, i) => rsEarnChart.series[i].setData(c ? c.t.map((t, j) => ({ time: t, value: c.v[j] })) : []));
+  rsEarnChart.timeScale().fitContent();
+  rsEarnShort(r.short, p, base);
+  const sp = r.spikes;
+  if (sp && sp.n) {
+    const pl = sp.placebo;
+    $("#rs-earn-spk-note").innerHTML = `<p>年化暴衝 = 當天年化 ≥ ${pct(p.spike_apy, 0)} 且是前 30 天中位數的 ${p.spike_x} 倍以上（同一個幣 ${p.cooldown_d} 天內只算第一次）：${sp.n} 次、${sp.coins} 個幣。` +
+      `暴衝前 7 天平均已經比大盤多漲 ${rsRaw(pl.past7_abn.actual, 1)}（隨機日子 ${rsRaw(pl.past7_abn.p50, 1)}）；之後 30 天比大盤 ${rsRaw(pl.abn30.actual, 1)}（隨機日子 ${rsRaw(pl.abn30.p50, 1)}，比 ${pct(pl.abn30.share_below, 0)} 的隨機組好）。` +
+      `<br>暴衝前 7 天漲超過 30% 的 ${sp.after_pump.n} 次：之後 30 天比大盤 ${rsRaw(sp.after_pump.abn30.mean, 1)}；其他 ${sp.no_pump.n} 次：${rsRaw(sp.no_pump.abn30.mean, 1)}。</p>`;
+    const by = sp.by;
+    table($("#rs-earn-spk"), [
+      { t: "", cls: "l", k: "name" }, { t: "平均", f: (x) => rsRaw(x.s.mean, 1) }, { t: "中位數", f: (x) => rsRaw(x.s.median, 1) },
+      { t: "上漲比例", f: (x) => pct(x.s.win, 0) }, { t: "t", f: (x) => num(x.s.t, 1) }, { t: "筆數", f: (x) => fmtN(x.s.n) },
+    ], [["暴衝前 7 天（扣大盤）", "past7_abn"], ...[1, 7, 30, 90].map((h) => [`之後 ${h} 天（扣大盤）`, `abn${h}`]), ["之後 30 天（原始）", "fwd30"], ["之後 90 天（原始）", "fwd90"]]
+      .map(([name, k]) => ({ name, s: by[k] || {} })));
+  }
+  const q = r.quintiles;
+  if (q && q.quintiles) {
+    table($("#rs-earn-q"), [
+      { t: "組", f: (x) => (x.q === 5 ? "5（年化最高）" : x.q === 1 ? "1（最低）" : x.q) }, { t: "年化中位數", f: (x) => pct(x.rate_median, 0) },
+      { t: "之後 7 天", f: (x) => rsRaw(x.ex7, 2) }, { t: "之後 30 天", f: (x) => rsRaw(x.ex30, 2) },
+    ], q.quintiles.slice().reverse());
+  }
+  table($("#rs-earn-recent"), [
+    { t: "日期", k: "t" }, { t: "幣", cls: "l", f: (x) => `<span class="tid">${esc(x.inst.replace("-USDT-SWAP", ""))}</span>` },
+    { t: "年化", f: (x) => pct(x.rate, 0) }, { t: "前 7 天", f: (x) => rsRaw(x.past7, 1) }, { t: "之後 30 天", f: (x) => (x.fwd30 == null ? "-" : rsRaw(x.fwd30, 1)) },
+  ], (sp && sp.recent) || []);
+}
+$("#rs-pool-src").addEventListener("change", () => api("/api/research/pool").then((d) => d.result && rsPool(d.result)).catch(() => {}));
+
 /* ---------------- shell: jobs indicator, sub-nav, lab steps ---------------- */
 const GLOBAL_JOBS = [
-  { url: "/api/backtest/job", label: "回測", tab: "bt" },
+  { url: "/api/backtest/job", label: "歷史事件", tab: "ev" },
   { url: "/api/account/job", label: "戰績分析", tab: "ac" },
   { url: "/api/discover/job", label: "進場探索", tab: "dc" },
   { url: "/api/paper/jobs", label: "AI 模擬", tab: "pp", multi: true },
