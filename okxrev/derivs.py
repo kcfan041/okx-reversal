@@ -367,7 +367,9 @@ def attach(g: pd.DataFrame, fund: pd.DataFrame, oi: pd.DataFrame) -> pd.DataFram
             ts = o["ts"].to_numpy(np.int64) + lag
             v = o["oi_usd"].to_numpy(float)
             chg = np.full(len(v), np.nan)
-            chg[look:] = v[look:] / v[:-look] - 1
+            prev = v[:-look]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                chg[look:] = np.where(prev > 0, v[look:] / prev - 1, np.nan)
             k = np.searchsorted(ts, idx + db.BAR_MS, side="right") - 1
             val = np.where(k >= 0, chg[np.clip(k, 0, None)], np.nan)
             out["oi_chg_24h"] = np.where(np.isnan(val), out["oi_chg_24h"], val)
